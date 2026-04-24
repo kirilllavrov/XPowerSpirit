@@ -53,7 +53,7 @@ source ~/.bashrc
 ```
 
 ## 🚀 Установка
-Вариант 1 — указать подписку аргументом
+
 ```bash
 curl -sL https://raw.githubusercontent.com/kirilllavrov/install-scripts/main/install-xray.sh \
   | sudo bash -s -- --sub="https://example.com/subscription"
@@ -62,7 +62,7 @@ curl -sL https://raw.githubusercontent.com/kirilllavrov/install-scripts/main/ins
 ## 📌 Где хранится подписка
 
 После установки ссылка сохраняется в файл:
-```Код
+```code
 
 /usr/local/etc/xray/subscription.url
 ```
@@ -74,7 +74,7 @@ sudo systemctl start xray-update.service
 ## 🔄 Автообновление
 
 Работает через systemd timer:
-```Код
+```code
 
 xray-update.timer → каждые 3 часа
 ```
@@ -82,20 +82,3 @@ xray-update.timer → каждые 3 часа
 ```bash
 sudo systemctl start xray-update.service
 ```
-
-## 🧩 Что делает скрипт
-
-   - скачивает и обновляет Xray
-
-   - скачивает и обновляет geoip.dat и geosite.dat
-
-   - скачивает подписку
-
-   - парсит её в outbounds
-
-   - генерирует финальный config.json
-
-   - тестирует конфиг
-
-   - перезапускает Xray
-

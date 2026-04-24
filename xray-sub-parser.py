@@ -3,11 +3,37 @@ import sys
 import base64
 import json
 import urllib.parse as urlparse
+import re
 
 
+# -----------------------------
+# НОРМАЛИЗАЦИЯ ТЕГОВ
+# -----------------------------
+def normalize_tag(tag: str) -> str:
+    # URL-decode
+    tag = urlparse.unquote(tag)
+
+    # Пробелы → _
+    tag = tag.replace(" ", "_")
+
+    # Убираем скобки
+    tag = tag.replace("(", "").replace(")", "")
+
+    # Разрешаем буквы, цифры, _, -, emoji
+    tag = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_\-🇦-🇿🇦-🇿]", "", tag)
+
+    # Если тег пустой — fallback
+    if not tag:
+        tag = "proxy"
+
+    return tag
+
+
+# -----------------------------
+# BASE64 → TEXT
+# -----------------------------
 def try_base64_decode(data: str) -> str:
     data_stripped = data.strip()
-    # если уже есть vless:// — не трогаем
     if "vless://" in data_stripped:
         return data_stripped
     try:
@@ -19,31 +45,10 @@ def try_base64_decode(data: str) -> str:
     return data_stripped
 
 
-def parse_bool(val: str, default: bool = False) -> bool:
-    if val is None:
-        return default
-    v = val.strip().lower()
-    if v in ("1", "true", "yes", "on"):
-        return True
-    if v in ("0", "false", "no", "off"):
-        return False
-    return default
-
-
-def get_param(params, key, default=None):
-    v = params.get(key)
-    if not v:
-        return default
-    # parse_qs -> list
-    if isinstance(v, list):
-        return v[0]
-    return v
-
-
+# -----------------------------
+# ПАРСЕР VLESS
+# -----------------------------
 def parse_vless_uri(uri: str, idx: int):
-    """
-    vless://uuid@host:port?type=ws&security=reality&pbk=...&sid=...&spx=...&sni=...&alpn=h2,http/1.1&fp=chrome&path=/ws&host=example.com#tag
-    """
     parsed = urlparse.urlparse(uri)
 
     if parsed.scheme.lower() != "vless":
@@ -52,26 +57,37 @@ def parse_vless_uri(uri: str, idx: int):
     user = parsed.username or ""
     host = parsed.hostname or ""
     port = parsed.port or 443
-    fragment = parsed.fragment or ""
-    tag = fragment if fragment else f"proxy-vless-{idx}"
 
-    # query params
+    # ТЕГ
+    fragment = parsed.fragment or ""
+    if fragment:
+        tag = normalize_tag(fragment)
+    else:
+        tag = f"proxy-vless-{idx}"
+
+    # QUERY
     q = urlparse.parse_qs(parsed.query)
 
-    # базовые поля пользователя
-    uuid = user
-    encryption = get_param(q, "encryption", "none")
-    flow = get_param(q, "flow", None)
+    def get_param(key, default=None):
+        v = q.get(key)
+        if not v:
+            return default
+        return v[0]
 
-    # транспорт
-    network = get_param(q, "type", "tcp").lower()
+    # БАЗОВЫЕ ПОЛЯ
+    uuid = user
+    encryption = get_param("encryption", "none")
+    flow = get_param("flow", None)
+
+    # ТРАНСПОРТ
+    network = get_param("type", "tcp").lower()
     if network in ("h2", "http2"):
         network = "http"
     if network not in ("tcp", "ws", "grpc", "http", "xhttp"):
         network = "tcp"
 
-    # security
-    security = get_param(q, "security", "none").lower()
+    # SECURITY
+    security = get_param("security", "none").lower()
     if security in ("tls", "xtls"):
         security_mode = "tls"
     elif security == "reality":
@@ -79,30 +95,28 @@ def parse_vless_uri(uri: str, idx: int):
     else:
         security_mode = "none"
 
-    sni = get_param(q, "sni", None)
-    alpn_raw = get_param(q, "alpn", None)
-    alpn = None
-    if alpn_raw:
-        alpn = [x.strip() for x in alpn_raw.split(",") if x.strip()]
+    sni = get_param("sni", None)
+    fp = get_param("fp", None)
+    alpn_raw = get_param("alpn", None)
+    alpn = [x.strip() for x in alpn_raw.split(",")] if alpn_raw else None
 
-    fp = get_param(q, "fp", None)  # fingerprint
-    allow_insecure = parse_bool(get_param(q, "allowInsecure", None), False)
+    allow_insecure = get_param("allowInsecure", "0") in ("1", "true", "yes")
 
-    # Reality
-    pbk = get_param(q, "pbk", None)  # publicKey
-    sid = get_param(q, "sid", None)  # shortId
-    spx = get_param(q, "spx", None)  # spiderX
+    # REALITY
+    pbk = get_param("pbk", None)
+    sid = get_param("sid", None)
+    spx = get_param("spx", None)
 
     # WS / HTTP / XHTTP / gRPC
-    path = get_param(q, "path", "/")
-    host_header = get_param(q, "host", None)
-    grpc_service = get_param(q, "serviceName", None) or get_param(q, "grpc-service-name", None)
-    xhttp_mode = get_param(q, "mode", None)
+    path = get_param("path", "/")
+    host_header = get_param("host", None)
+    grpc_service = get_param("serviceName", None) or get_param("grpc-service-name", None)
+    xhttp_mode = get_param("mode", None)
 
-    # settings.vnext
+    # SETTINGS
     user_obj = {
         "id": uuid,
-        "encryption": encryption,
+        "encryption": encryption
     }
     if flow:
         user_obj["flow"] = flow
@@ -112,35 +126,34 @@ def parse_vless_uri(uri: str, idx: int):
             {
                 "address": host,
                 "port": port,
-                "users": [user_obj],
+                "users": [user_obj]
             }
         ]
     }
 
-    # streamSettings
+    # STREAM SETTINGS
     stream = {
-        "network": network,
+        "network": network
     }
 
-    # security / tls / reality
+    # TLS / REALITY
     if security_mode == "tls":
         stream["security"] = "tls"
-        tls_settings = {}
+        tls = {}
         if sni:
-            tls_settings["serverName"] = sni
+            tls["serverName"] = sni
         if alpn:
-            tls_settings["alpn"] = alpn
+            tls["alpn"] = alpn
         if fp:
-            tls_settings["fingerprint"] = fp
+            tls["fingerprint"] = fp
         if allow_insecure:
-            tls_settings["allowInsecure"] = True
-        if tls_settings:
-            stream["tlsSettings"] = tls_settings
+            tls["allowInsecure"] = True
+        if tls:
+            stream["tlsSettings"] = tls
 
     elif security_mode == "reality":
         stream["security"] = "reality"
         reality = {}
-        # dest: host:port (часто не обязателен на клиенте, но добавим если есть sni)
         if sni:
             reality["serverName"] = sni
         if pbk:
@@ -151,14 +164,11 @@ def parse_vless_uri(uri: str, idx: int):
             reality["spiderX"] = spx
         if fp:
             reality["fingerprint"] = fp
-        if reality:
-            stream["realitySettings"] = reality
+        stream["realitySettings"] = reality
 
-    # network-specific settings
+    # NETWORK-SPECIFIC
     if network == "ws":
-        ws = {
-            "path": path or "/",
-        }
+        ws = {"path": path}
         if host_header:
             ws["headers"] = {"Host": host_header}
         stream["wsSettings"] = ws
@@ -187,16 +197,20 @@ def parse_vless_uri(uri: str, idx: int):
             xhttp["mode"] = xhttp_mode
         stream["xhttpSettings"] = xhttp
 
+    # OUTBOUND
     outbound = {
         "tag": tag,
         "protocol": "vless",
         "settings": settings,
-        "streamSettings": stream,
+        "streamSettings": stream
     }
 
     return outbound
 
 
+# -----------------------------
+# MAIN
+# -----------------------------
 def main():
     raw = sys.stdin.read()
     if not raw.strip():
@@ -208,17 +222,16 @@ def main():
 
     outbounds = []
     idx = 0
+
     for line in lines:
-        if not line.startswith("vless://"):
-            continue
-        ob = parse_vless_uri(line, idx)
-        if ob:
-            outbounds.append(ob)
-            idx += 1
+        if line.startswith("vless://"):
+            ob = parse_vless_uri(line, idx)
+            if ob:
+                outbounds.append(ob)
+                idx += 1
 
     print(json.dumps(outbounds, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":
     main()
-

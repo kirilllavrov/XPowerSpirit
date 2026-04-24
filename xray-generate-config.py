@@ -29,6 +29,7 @@ def load_outbounds():
 
 
 def filter_by_domain_whitelist(all_obs):
+    # Если whitelist пуст — пропускаем все сервера
     if not DOMAIN_WHITELIST:
         return all_obs
 
@@ -95,12 +96,10 @@ def base_config():
                     ],
                     "skipFallback": False
                 },
-                # Cloudflare DoH && Google DoH
                 "https://cloudflare-dns.com/dns-query",
                 "https://dns.google/dns-query",
             ]
         },
-        # SOCKS inbound
         "inbounds": [
             {
                 "port": 10802,
@@ -170,6 +169,7 @@ def main():
         st = ob.get("streamSettings", {}) or {}
         net = st.get("network", "")
         sec = st.get("security", "")
+
         if net == "xhttp":
             xhttp_tags.append(tag)
         elif sec == "reality":
@@ -237,4 +237,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

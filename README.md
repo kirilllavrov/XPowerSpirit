@@ -40,15 +40,15 @@
 и укажите:
 
 - **SOCKS5 proxy:** `127.0.0.1`
-- **Port:** `1080`
+- **Port:** `10802`
 
 ### Через переменные окружения (консоль)
 
 Добавьте в `~/.bashrc` или `~/.zshrc`:
 
 ```bash
-export ALL_PROXY="socks5://127.0.0.1:1080"
-export all_proxy="socks5://127.0.0.1:1080"
+export ALL_PROXY="socks5://127.0.0.1:10802"
+export all_proxy="socks5://127.0.0.1:10802"
 source ~/.bashrc
 ```
 

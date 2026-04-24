@@ -25,14 +25,6 @@ if [ -f "$SUB_FILE" ]; then
     SUB_URL="$(cat "$SUB_FILE" | tr -d '[:space:]')"
 fi
 
-# fallback если файла нет или пустой
-if [ -z "$SUB_URL" ]; then
-    SUB_URL="https://sub.freenternet.top/UsB27vHHPbAKDDtf"
-    echo "[i] Используем fallback подписку Freenternet"
-else
-    echo "[i] Используем подписку из $SUB_FILE"
-fi
-
 # ---------------------------------------------------------
 # 2. SHA256 для geodata (.sha256sum)
 # ---------------------------------------------------------

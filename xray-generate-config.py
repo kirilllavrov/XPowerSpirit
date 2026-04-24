@@ -9,7 +9,7 @@ OUTBOUNDS_FILE = "/tmp/new_outbounds.json"
 # ФИЛЬТР ПО ДОМЕНАМ (ТОЛЬКО WHITELIST)
 # -----------------------------
 DOMAIN_WHITELIST = [
-    "cdn.redcook.ru"
+
 ]
 
 

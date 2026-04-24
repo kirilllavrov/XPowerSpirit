@@ -1,4 +1,4 @@
-# Xray Install Scripts
+# XPowerSpirit - Xray Install Scripts
 
 Полный набор скриптов для установки и автоматического обновления Xray:
 

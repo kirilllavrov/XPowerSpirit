@@ -8,7 +8,19 @@ chmod 755 "$LOG_DIR"
 echo "===== Xray Update Started: $(date) ====="
 
 # ---------------------------------------------------------
-# 0. HWID
+# Проверка зависимостей
+# ---------------------------------------------------------
+for bin in jq python3 curl unzip; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "[!] Требуется $bin, но он не найден"
+    exit 1
+  fi
+done
+
+XRAY_BIN="/usr/local/bin/xray"
+
+# ---------------------------------------------------------
+# HWID
 # ---------------------------------------------------------
 if [ -f /etc/machine-id ]; then
     HWID="$(cat /etc/machine-id)"
@@ -17,7 +29,7 @@ else
 fi
 
 # ---------------------------------------------------------
-# 1. Читаем ссылку на подписку
+# Подписка
 # ---------------------------------------------------------
 SUB_FILE="/usr/local/etc/xray/subscription.url"
 
@@ -25,8 +37,19 @@ if [ -f "$SUB_FILE" ]; then
     SUB_URL="$(cat "$SUB_FILE" | tr -d '[:space:]')"
 fi
 
+if [ -z "$SUB_URL" ]; then
+    echo "[!] Подписка не указана"
+    exit 1
+fi
+
 # ---------------------------------------------------------
-# 2. SHA256 для geodata (.sha256sum)
+# Каталог состояния
+# ---------------------------------------------------------
+STATE_DIR="/usr/local/share/xray/state"
+mkdir -p "$STATE_DIR"
+
+# ---------------------------------------------------------
+# Функция обновления geodata
 # ---------------------------------------------------------
 download_geo_if_changed() {
     local URL="$1"
@@ -37,7 +60,7 @@ download_geo_if_changed() {
 
     REMOTE_SHA=$(curl -s "${URL}.sha256sum" | awk '{print $1}')
     if [ -z "$REMOTE_SHA" ]; then
-        echo "    [!] Не удалось получить SHA256: ${URL}.sha256sum"
+        echo "    [!] Не удалось получить SHA256"
         return 1
     fi
 
@@ -55,8 +78,6 @@ download_geo_if_changed() {
     LOCAL_SHA_NEW=$(sha256sum "$DEST" | awk '{print $1}')
     if [ "$LOCAL_SHA_NEW" != "$REMOTE_SHA" ]; then
         echo "    [!] Ошибка SHA256!"
-        echo "        Ожидалось: $REMOTE_SHA"
-        echo "        Получено:  $LOCAL_SHA_NEW"
         exit 1
     fi
 
@@ -65,8 +86,10 @@ download_geo_if_changed() {
 }
 
 # ---------------------------------------------------------
-# 3. SHA256 для Xray (.dgst)
+# Функция обновления Xray
 # ---------------------------------------------------------
+XRAY_UPDATED=0
+
 download_xray_if_changed() {
     local URL="$1"
     local DEST="$2"
@@ -75,8 +98,11 @@ download_xray_if_changed() {
 
     echo "[*] Проверяем Xray ZIP: $DEST"
 
-    curl -s -L -o /tmp/xray.dgst "$DGST_URL"
-    REMOTE_SHA=$(awk -F '= ' '/256=/ {print $2}' /tmp/xray.dgst)
+    curl -s -L -o "$STATE_DIR/xray.dgst" "$DGST_URL"
+
+    REMOTE_SHA=$(grep -E 'SHA2-256=|SHA256=|SHA256 ' "$STATE_DIR/xray.dgst" \
+        | sed 's/.*= *//' \
+        | tr -d '[:space:]')
 
     if [ -z "$REMOTE_SHA" ]; then
         echo "    [!] Не удалось получить SHA256 из .dgst"
@@ -97,17 +123,16 @@ download_xray_if_changed() {
     LOCAL_SHA_NEW=$(sha256sum "$DEST" | awk '{print $1}')
     if [ "$LOCAL_SHA_NEW" != "$REMOTE_SHA" ]; then
         echo "    [!] Ошибка SHA256!"
-        echo "        Ожидалось: $REMOTE_SHA"
-        echo "        Получено:  $LOCAL_SHA_NEW"
         exit 1
     fi
 
     echo "$REMOTE_SHA" > "$SHA_FILE"
+    XRAY_UPDATED=1
     echo "    ✓ Xray ZIP обновлён"
 }
 
 # ---------------------------------------------------------
-# 4. Обновление Xray
+# Обновление Xray
 # ---------------------------------------------------------
 echo "[+] Проверяем обновления Xray..."
 
@@ -128,22 +153,19 @@ fi
 
 echo "  - Последняя версия: $LATEST_VERSION"
 
-TMP_DIR="/tmp/xray_update"
-mkdir -p "$TMP_DIR"
-
 ZIP_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${MACHINE}.zip"
-ZIP_FILE="$TMP_DIR/xray.zip"
+ZIP_FILE="$STATE_DIR/xray.zip"
 
 download_xray_if_changed "$ZIP_URL" "$ZIP_FILE"
 
-if [ -f "$ZIP_FILE" ]; then
+if [ "$XRAY_UPDATED" = "1" ]; then
     echo "  - Распаковываем Xray..."
-    rm -rf "$TMP_DIR/unpack"
-    mkdir -p "$TMP_DIR/unpack"
-    unzip -q "$ZIP_FILE" -d "$TMP_DIR/unpack"
+    rm -rf "$STATE_DIR/unpack"
+    mkdir -p "$STATE_DIR/unpack"
+    unzip -q "$ZIP_FILE" -d "$STATE_DIR/unpack"
 
     echo "  - Обновляем /usr/local/bin/xray"
-    install -m 755 "$TMP_DIR/unpack/xray" /usr/local/bin/xray
+    install -m 755 "$STATE_DIR/unpack/xray" "$XRAY_BIN"
 
     echo "    ✓ Xray обновлён"
 else
@@ -151,7 +173,7 @@ else
 fi
 
 # ---------------------------------------------------------
-# 5. Обновление geodata
+# Обновление geodata
 # ---------------------------------------------------------
 GEO_DIR="/usr/local/share/xray"
 mkdir -p "$GEO_DIR"
@@ -167,7 +189,7 @@ download_geo_if_changed \
   "$GEO_DIR/geosite.dat"
 
 # ---------------------------------------------------------
-# 6. Подписка → парсер → генератор
+# Подписка → парсер → генератор
 # ---------------------------------------------------------
 echo "[+] Скачиваем подписку..."
 SUB_DATA=$(curl -s -L -m 15 -H "User-Agent: Happ" -H "x-hwid: $HWID" "$SUB_URL")
@@ -193,10 +215,10 @@ echo "[+] Генерируем конфиг..."
 python3 /usr/local/bin/xray-generate-config.py > "$CONFIG_FINAL"
 
 # ---------------------------------------------------------
-# 7. Тест и перезапуск
+# Тест и перезапуск
 # ---------------------------------------------------------
 echo "[+] Тестируем конфиг..."
-if xray run -test -config "$CONFIG_FINAL"; then
+if "$XRAY_BIN" run -test -config "$CONFIG_FINAL"; then
     systemctl restart xray
     echo "[✓] Успешно обновлено и перезапущено!"
 else

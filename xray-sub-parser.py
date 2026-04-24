@@ -10,22 +10,12 @@ import re
 # НОРМАЛИЗАЦИЯ ТЕГОВ
 # -----------------------------
 def normalize_tag(tag: str) -> str:
-    # URL-decode
     tag = urlparse.unquote(tag)
-
-    # Пробелы → _
     tag = tag.replace(" ", "_")
-
-    # Убираем скобки
     tag = tag.replace("(", "").replace(")", "")
-
-    # Разрешаем буквы, цифры, _, -, emoji
     tag = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_\-🇦-🇿🇦-🇿]", "", tag)
-
-    # Если тег пустой — fallback
     if not tag:
         tag = "proxy"
-
     return tag
 
 
@@ -43,6 +33,19 @@ def try_base64_decode(data: str) -> str:
     except Exception:
         pass
     return data_stripped
+
+
+# -----------------------------
+# SAFE JSON PARSER FOR extra=
+# -----------------------------
+def parse_extra_json(extra_raw: str):
+    if not extra_raw:
+        return None
+    try:
+        decoded = urlparse.unquote(extra_raw)
+        return json.loads(decoded)
+    except Exception:
+        return None
 
 
 # -----------------------------
@@ -112,6 +115,7 @@ def parse_vless_uri(uri: str, idx: int):
     host_header = get_param("host", None)
     grpc_service = get_param("serviceName", None) or get_param("grpc-service-name", None)
     xhttp_mode = get_param("mode", None)
+    extra_raw = get_param("extra", None)
 
     # SETTINGS
     user_obj = {
@@ -195,6 +199,12 @@ def parse_vless_uri(uri: str, idx: int):
             xhttp["host"] = [host_header]
         if xhttp_mode:
             xhttp["mode"] = xhttp_mode
+
+        # EXTRA JSON
+        extra_obj = parse_extra_json(extra_raw)
+        if extra_obj:
+            xhttp["extra"] = extra_obj
+
         stream["xhttpSettings"] = xhttp
 
     # OUTBOUND

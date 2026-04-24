@@ -1,0 +1,6 @@
+[Unit]
+Description=Update Xray and geodata
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/update-xray.sh

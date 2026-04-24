@@ -1,0 +1,12 @@
+[Unit]
+Description=Xray Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+Restart=on-failure
+LimitNOFILE=100000
+
+[Install]
+WantedBy=multi-user.target

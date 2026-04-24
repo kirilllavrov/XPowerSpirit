@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Xray updater every 3 hours
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=3h
+Unit=xray-update.service
+
+[Install]
+WantedBy=timers.target

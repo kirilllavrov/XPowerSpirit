@@ -17,7 +17,24 @@ else
 fi
 
 # ---------------------------------------------------------
-# 1. SHA256 для geodata (raw.githubusercontent)
+# 1. Читаем ссылку на подписку
+# ---------------------------------------------------------
+SUB_FILE="/usr/local/etc/xray/subscription.url"
+
+if [ -f "$SUB_FILE" ]; then
+    SUB_URL="$(cat "$SUB_FILE" | tr -d '[:space:]')"
+fi
+
+# fallback если файла нет или пустой
+if [ -z "$SUB_URL" ]; then
+    SUB_URL="https://sub.freenternet.top/UsB27vHHPbAKDDtf"
+    echo "[i] Используем fallback подписку Freenternet"
+else
+    echo "[i] Используем подписку из $SUB_FILE"
+fi
+
+# ---------------------------------------------------------
+# 2. SHA256 для geodata (.sha256sum)
 # ---------------------------------------------------------
 download_geo_if_changed() {
     local URL="$1"
@@ -56,7 +73,7 @@ download_geo_if_changed() {
 }
 
 # ---------------------------------------------------------
-# 2. SHA256 для Xray (.dgst)
+# 3. SHA256 для Xray (.dgst)
 # ---------------------------------------------------------
 download_xray_if_changed() {
     local URL="$1"
@@ -98,7 +115,7 @@ download_xray_if_changed() {
 }
 
 # ---------------------------------------------------------
-# 3. Обновление Xray
+# 4. Обновление Xray
 # ---------------------------------------------------------
 echo "[+] Проверяем обновления Xray..."
 
@@ -142,7 +159,7 @@ else
 fi
 
 # ---------------------------------------------------------
-# 4. Обновление geodata (raw.githubusercontent)
+# 5. Обновление geodata
 # ---------------------------------------------------------
 GEO_DIR="/usr/local/share/xray"
 mkdir -p "$GEO_DIR"
@@ -158,10 +175,8 @@ download_geo_if_changed \
   "$GEO_DIR/geosite.dat"
 
 # ---------------------------------------------------------
-# 5. Подписка → парсер → генератор
+# 6. Подписка → парсер → генератор
 # ---------------------------------------------------------
-SUB_URL="https://sub.freenternet.top/UsB27vHHPbAKDDtf"
-
 echo "[+] Скачиваем подписку..."
 SUB_DATA=$(curl -s -L -m 15 -H "User-Agent: Happ" -H "x-hwid: $HWID" "$SUB_URL")
 
@@ -186,7 +201,7 @@ echo "[+] Генерируем конфиг..."
 python3 /usr/local/bin/xray-generate-config.py > "$CONFIG_FINAL"
 
 # ---------------------------------------------------------
-# 6. Тест и перезапуск
+# 7. Тест и перезапуск
 # ---------------------------------------------------------
 echo "[+] Тестируем конфиг..."
 if xray run -test -config "$CONFIG_FINAL"; then
@@ -201,4 +216,3 @@ else
 fi
 
 echo "===== Xray Update Finished: $(date) ====="
-

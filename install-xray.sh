@@ -116,15 +116,15 @@ echo "✓ Xray установлен"
 # ---------------------------------------------------------
 echo "[+] Устанавливаем update-xray.sh, parser, generator..."
 
-curl -sL https://raw.githubusercontent.com/kirilllavrov/xray-config/main/update-xray.sh \
+curl -sL https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/refs/heads/main/update-xray.sh \
     -o /usr/local/bin/update-xray.sh
 chmod +x /usr/local/bin/update-xray.sh
 
-curl -sL https://raw.githubusercontent.com/kirilllavrov/xray-config/main/xray-sub-parser.py \
+curl -sL https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/refs/heads/main/xray-sub-parser.py \
     -o /usr/local/bin/xray-sub-parser.py
 chmod +x /usr/local/bin/xray-sub-parser.py
 
-curl -sL https://raw.githubusercontent.com/kirilllavrov/xray-config/main/xray-generate-config.py \
+curl -sL https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/refs/heads/main/xray-generate-config.py \
     -o /usr/local/bin/xray-generate-config.py
 chmod +x /usr/local/bin/xray-generate-config.py
 

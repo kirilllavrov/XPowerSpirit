@@ -9,14 +9,12 @@ OUTBOUNDS_FILE = "/tmp/new_outbounds.json"
 # ФИЛЬТР ПО ДОМЕНАМ (ТОЛЬКО WHITELIST)
 # -----------------------------
 DOMAIN_WHITELIST = [
-
+    # Пример: "example.com"
 ]
-
 
 def load_outbounds():
     if not os.path.exists(OUTBOUNDS_FILE):
         return []
-
     try:
         with open(OUTBOUNDS_FILE, "r") as f:
             data = json.load(f)
@@ -24,15 +22,13 @@ def load_outbounds():
                 return data
     except Exception:
         pass
-
     return []
-
 
 def filter_by_domain_whitelist(all_obs):
     # Если whitelist пуст — пропускаем все сервера
     if not DOMAIN_WHITELIST:
         return all_obs
-
+    
     filtered = []
     for ob in all_obs:
         vnext = ob.get("settings", {}).get("vnext", [{}])[0]
@@ -40,7 +36,6 @@ def filter_by_domain_whitelist(all_obs):
         if addr in DOMAIN_WHITELIST:
             filtered.append(ob)
     return filtered
-
 
 # -----------------------------
 # БАЗОВЫЙ КОНФИГ ДЛЯ КЛИЕНТА
@@ -111,7 +106,6 @@ def base_config():
         ]
     }
 
-
 def main():
     all_obs = load_outbounds()
     filtered_obs = filter_by_domain_whitelist(all_obs)
@@ -152,8 +146,8 @@ def main():
                 {"type": "field", "domain": ["geosite:category-streaming", "geosite:category-games"], "outboundTag": only_tag},
                 {"type": "field", "ip": ["geoip:ru", "geoip:private"], "outboundTag": "direct"},
                 {"type": "field", "domain": ["geosite:private", "geosite:category-browser",
-                                              "geosite:category-cdn-ru", "geosite:category-mobile",
-                                              "geosite:category-ru"], "outboundTag": "direct"},
+                                             "geosite:category-cdn-ru", "geosite:category-mobile",
+                                             "geosite:category-ru"], "outboundTag": "direct"},
                 {"type": "field", "network": "tcp,udp", "outboundTag": only_tag}
             ]
         }
@@ -164,12 +158,13 @@ def main():
     # ЕСЛИ СЕРВЕРОВ 2+
     # -----------------------------
     xhttp_tags, reality_tags, other_tags = [], [], []
+    
     for ob in filtered_obs:
         tag = ob.get("tag", "")
         st = ob.get("streamSettings", {}) or {}
         net = st.get("network", "")
         sec = st.get("security", "")
-
+        
         if net == "xhttp":
             xhttp_tags.append(tag)
         elif sec == "reality":
@@ -199,17 +194,22 @@ def main():
 
     rules = [
         {"type": "field", "domain": ["geosite:category-ads"], "outboundTag": "block"},
-        {"type": "field", "domain": ["geosite:category-streaming", "geosite:category-games"], "balancerTag": "balancer-reality"},
         {"type": "field", "ip": ["geoip:ru", "geoip:private"], "outboundTag": "direct"},
         {"type": "field", "domain": ["geosite:private", "geosite:category-browser",
                                      "geosite:category-cdn-ru", "geosite:category-mobile",
                                      "geosite:category-ru"], "outboundTag": "direct"}
     ]
 
+    # Добавляем правила для баланкеров только если они существуют
+    if reality_tags:
+        rules.append({"type": "field", "domain": ["geosite:category-streaming", "geosite:category-games"], "balancerTag": "balancer-reality"})
+    
     if xhttp_tags:
         rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-xhttp"})
+    
     if reality_tags:
         rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-reality"})
+    
     if other_tags:
         rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-other"})
 
@@ -218,23 +218,21 @@ def main():
         {"protocol": "freedom", "tag": "direct"},
         {"protocol": "blackhole", "tag": "block"}
     ]
-
+    
     cfg["observatory"] = {
         "subjectSelector": ["proxy-"],
         "probeURL": "https://www.google.com/generate_204",
         "probeInterval": "120s",
         "enableConcurrency": True
     }
-
+    
     cfg["routing"] = {
         "domainStrategy": "ForceIPv4",
         "balancers": balancers,
         "rules": rules
     }
-
+    
     print(json.dumps(cfg, indent=2, ensure_ascii=False))
-
 
 if __name__ == "__main__":
     main()
-

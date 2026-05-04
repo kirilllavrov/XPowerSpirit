@@ -4,20 +4,22 @@ import base64
 import json
 import urllib.parse as urlparse
 import re
-
+from collections import Counter
 
 # -----------------------------
 # НОРМАЛИЗАЦИЯ ТЕГОВ
 # -----------------------------
 def normalize_tag(tag: str) -> str:
+    if not tag:
+        return "proxy"
     tag = urlparse.unquote(tag)
     tag = tag.replace(" ", "_")
     tag = tag.replace("(", "").replace(")", "")
+    # Оставляем буквы, цифры, эмодзи флагов, подчеркивания и дефисы
     tag = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_\-🇦-🇿🇦-🇿]", "", tag)
     if not tag:
-        tag = "proxy"
+        return "proxy"
     return tag
-
 
 # -----------------------------
 # BASE64 → TEXT
@@ -27,13 +29,13 @@ def try_base64_decode(data: str) -> str:
     if "vless://" in data_stripped:
         return data_stripped
     try:
+        # Пробуем декодировать весь блок как base64
         decoded = base64.b64decode(data_stripped, validate=True).decode(errors="ignore")
         if "vless://" in decoded:
             return decoded
     except Exception:
         pass
     return data_stripped
-
 
 # -----------------------------
 # SAFE JSON PARSER FOR extra=
@@ -47,13 +49,11 @@ def parse_extra_json(extra_raw: str):
     except Exception:
         return None
 
-
 # -----------------------------
 # ПАРСЕР VLESS
 # -----------------------------
 def parse_vless_uri(uri: str, idx: int):
     parsed = urlparse.urlparse(uri)
-
     if parsed.scheme.lower() != "vless":
         return None
 
@@ -63,14 +63,28 @@ def parse_vless_uri(uri: str, idx: int):
 
     # ТЕГ
     fragment = parsed.fragment or ""
-    if fragment:
-        tag = normalize_tag(fragment)
-    else:
-        tag = f"proxy-vless-{idx}"
+    raw_tag = normalize_tag(fragment) if fragment else f"proxy-vless-{idx}"
+    
+    # Возвращаем сырый тег и индекс для последующей уникализации
+    return {
+        "raw_tag": raw_tag,
+        "idx": idx,
+        "uri_data": {
+            "host": host,
+            "port": port,
+            "user": user,
+            "query": parsed.query,
+            "fragment": fragment
+        }
+    }
 
-    # QUERY
-    q = urlparse.parse_qs(parsed.query)
-
+def build_outbound(raw_tag: str, unique_idx: int, uri_data: dict) -> dict:
+    host = uri_data["host"]
+    port = uri_data["port"]
+    uuid = uri_data["user"]
+    query_str = uri_data["query"]
+    
+    q = urlparse.parse_qs(query_str)
     def get_param(key, default=None):
         v = q.get(key)
         if not v:
@@ -78,7 +92,6 @@ def parse_vless_uri(uri: str, idx: int):
         return v[0]
 
     # БАЗОВЫЕ ПОЛЯ
-    uuid = user
     encryption = get_param("encryption", "none")
     flow = get_param("flow", None)
 
@@ -102,7 +115,6 @@ def parse_vless_uri(uri: str, idx: int):
     fp = get_param("fp", None)
     alpn_raw = get_param("alpn", None)
     alpn = [x.strip() for x in alpn_raw.split(",")] if alpn_raw else None
-
     allow_insecure = get_param("allowInsecure", "0") in ("1", "true", "yes")
 
     # REALITY
@@ -199,24 +211,24 @@ def parse_vless_uri(uri: str, idx: int):
             xhttp["host"] = [host_header]
         if xhttp_mode:
             xhttp["mode"] = xhttp_mode
-
+        
         # EXTRA JSON
         extra_obj = parse_extra_json(extra_raw)
         if extra_obj:
             xhttp["extra"] = extra_obj
-
         stream["xhttpSettings"] = xhttp
+
+    # Финальный тег
+    final_tag = f"{raw_tag}-{unique_idx}" if unique_idx > 0 else raw_tag
 
     # OUTBOUND
     outbound = {
-        "tag": tag,
+        "tag": final_tag,
         "protocol": "vless",
         "settings": settings,
         "streamSettings": stream
     }
-
     return outbound
-
 
 # -----------------------------
 # MAIN
@@ -229,19 +241,40 @@ def main():
 
     data = try_base64_decode(raw)
     lines = [l.strip() for l in data.splitlines() if l.strip()]
-
-    outbounds = []
+    
+    parsed_items = []
     idx = 0
-
     for line in lines:
         if line.startswith("vless://"):
-            ob = parse_vless_uri(line, idx)
-            if ob:
-                outbounds.append(ob)
+            item = parse_vless_uri(line, idx)
+            if item:
+                parsed_items.append(item)
                 idx += 1
 
-    print(json.dumps(outbounds, indent=2, ensure_ascii=False))
+    # Уникализация тегов
+    tag_counts = Counter()
+    outbounds = []
+    
+    # Сначала считаем вхождения
+    for item in parsed_items:
+        tag_counts[item["raw_tag"]] += 1
 
+    # Сбрасываем счетчики для генерации суффиксов
+    current_counts = Counter()
+    
+    for item in parsed_items:
+        raw_tag = item["raw_tag"]
+        # Если тег встречается более 1 раза, добавляем индекс
+        if tag_counts[raw_tag] > 1:
+            suffix = current_counts[raw_tag]
+            current_counts[raw_tag] += 1
+            ob = build_outbound(raw_tag, suffix, item["uri_data"])
+        else:
+            ob = build_outbound(raw_tag, 0, item["uri_data"])
+        
+        outbounds.append(ob)
+
+    print(json.dumps(outbounds, indent=2, ensure_ascii=False))
 
 if __name__ == "__main__":
     main()

@@ -15,7 +15,6 @@ fi
 # 1. Парсим аргументы
 # ---------------------------------------------------------
 SUB_URL_ARG=""
-
 for arg in "$@"; do
     case $arg in
         --sub=*)
@@ -33,7 +32,6 @@ if [ -z "$SUB_URL_ARG" ]; then
     echo "Введите ссылку на подписку:"
     echo "(оставьте пустым — установка будет отменена)"
     read -r SUB_URL_INPUT
-
     if [ -z "$SUB_URL_INPUT" ]; then
         echo "[!] Подписка не указана. Установка отменена."
         exit 1
@@ -52,7 +50,6 @@ fi
 mkdir -p /usr/local/etc/xray
 echo "$SUB_URL" > /usr/local/etc/xray/subscription.url
 chmod 600 /usr/local/etc/xray/subscription.url
-
 echo "[+] Подписка сохранена: $SUB_URL"
 
 # ---------------------------------------------------------
@@ -61,13 +58,13 @@ echo "[+] Подписка сохранена: $SUB_URL"
 echo "[+] Устанавливаем зависимости..."
 if command -v apt >/dev/null 2>&1; then
     apt update -y
-    apt install -y curl unzip jq python3
+    apt install -y curl unzip jq python3 uuid-runtime
 elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl unzip jq python3
+    dnf install -y curl unzip jq python3 util-linux
 elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl unzip jq python3
+    yum install -y curl unzip jq python3 util-linux
 elif command -v apk >/dev/null 2>&1; then
-    apk add curl unzip jq python3
+    apk add curl unzip jq python3 util-linux
 else
     echo "[!] Неизвестный пакетный менеджер"
     exit 1
@@ -87,28 +84,23 @@ chmod 755 /var/log/xray
 # 6. Установка Xray
 # ---------------------------------------------------------
 echo "[+] Устанавливаем Xray..."
-
 LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest \
     | grep '"tag_name"' | cut -d '"' -f 4)
 
 ARCH=$(uname -m)
 case "$ARCH" in
-  x86_64|amd64) MACHINE="64" ;;
-  aarch64) MACHINE="arm64-v8a" ;;
-  armv7l) MACHINE="arm32-v7a" ;;
-  *) MACHINE="64" ;;
+    x86_64|amd64) MACHINE="64" ;;
+    aarch64) MACHINE="arm64-v8a" ;;
+    armv7l) MACHINE="arm32-v7a" ;;
+    *) MACHINE="64" ;;
 esac
 
 TMP_DIR="/tmp/xray_install"
 mkdir -p "$TMP_DIR"
-
 ZIP_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${MACHINE}.zip"
-
 curl -L -o "$TMP_DIR/xray.zip" "$ZIP_URL"
 unzip -q "$TMP_DIR/xray.zip" -d "$TMP_DIR"
-
 install -m 755 "$TMP_DIR/xray" /usr/local/bin/xray
-
 echo "✓ Xray установлен"
 
 # ---------------------------------------------------------
@@ -116,16 +108,18 @@ echo "✓ Xray установлен"
 # ---------------------------------------------------------
 echo "[+] Устанавливаем update-xray.sh, parser, generator..."
 
-curl -sL https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/refs/heads/main/update-xray.sh \
-    -o /usr/local/bin/update-xray.sh
+# Для безопасности лучше использовать конкретный хеш коммита или тег, 
+# но здесь оставлено main для простоты обновления самого инсталлятора.
+# В продакшене рекомендуется пинить версию.
+BASE_URL="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/main"
+
+curl -sL "${BASE_URL}/update-xray.sh" -o /usr/local/bin/update-xray.sh
 chmod +x /usr/local/bin/update-xray.sh
 
-curl -sL https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/refs/heads/main/xray-sub-parser.py \
-    -o /usr/local/bin/xray-sub-parser.py
+curl -sL "${BASE_URL}/xray-sub-parser.py" -o /usr/local/bin/xray-sub-parser.py
 chmod +x /usr/local/bin/xray-sub-parser.py
 
-curl -sL https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/refs/heads/main/xray-generate-config.py \
-    -o /usr/local/bin/xray-generate-config.py
+curl -sL "${BASE_URL}/xray-generate-config.py" -o /usr/local/bin/xray-generate-config.py
 chmod +x /usr/local/bin/xray-generate-config.py
 
 echo "✓ Файлы установлены"
@@ -134,7 +128,6 @@ echo "✓ Файлы установлены"
 # 8. Создание systemd service
 # ---------------------------------------------------------
 echo "[+] Создаём systemd сервис..."
-
 cat >/etc/systemd/system/xray.service <<EOF
 [Unit]
 Description=Xray Service
@@ -152,14 +145,12 @@ EOF
 
 systemctl daemon-reload
 systemctl enable xray.service
-
 echo "✓ systemd сервис создан"
 
 # ---------------------------------------------------------
 # 9. Создание systemd timer
 # ---------------------------------------------------------
 echo "[+] Создаём systemd таймер..."
-
 cat >/etc/systemd/system/xray-update.service <<EOF
 [Unit]
 Description=Update Xray and geodata
@@ -176,6 +167,7 @@ Description=Run Xray updater every 3 hours
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=3h
+RandomizedDelaySec=60
 Unit=xray-update.service
 
 [Install]
@@ -185,7 +177,6 @@ EOF
 systemctl daemon-reload
 systemctl enable xray-update.timer
 systemctl start xray-update.timer
-
 echo "✓ systemd таймер создан"
 
 # ---------------------------------------------------------

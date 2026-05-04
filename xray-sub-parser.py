@@ -11,14 +11,22 @@ from collections import Counter
 # -----------------------------
 def normalize_tag(tag: str) -> str:
     if not tag:
-        return "proxy"
+        return "proxy_unknown"
+    
     tag = urlparse.unquote(tag)
     tag = tag.replace(" ", "_")
     tag = tag.replace("(", "").replace(")", "")
+    
     # Оставляем буквы, цифры, эмодзи флагов, подчеркивания и дефисы
     tag = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_\-🇦-🇿🇦-🇿]", "", tag)
+    
     if not tag:
-        return "proxy"
+        return "proxy_unknown"
+    
+    # Принудительно добавляем префикс proxy_ для совместимости с observatory
+    if not tag.startswith("proxy_"):
+        tag = f"proxy_{tag}"
+        
     return tag
 
 # -----------------------------
@@ -63,7 +71,7 @@ def parse_vless_uri(uri: str, idx: int):
 
     # ТЕГ
     fragment = parsed.fragment or ""
-    raw_tag = normalize_tag(fragment) if fragment else f"proxy-vless-{idx}"
+    raw_tag = normalize_tag(fragment) if fragment else f"proxy_vless_{idx}"
     
     # Возвращаем сырый тег и индекс для последующей уникализации
     return {
@@ -219,7 +227,8 @@ def build_outbound(raw_tag: str, unique_idx: int, uri_data: dict) -> dict:
         stream["xhttpSettings"] = xhttp
 
     # Финальный тег
-    final_tag = f"{raw_tag}-{unique_idx}" if unique_idx > 0 else raw_tag
+    # Если unique_idx > 0, значит было дублирование имени, добавляем суффикс
+    final_tag = f"{raw_tag}_{unique_idx}" if unique_idx > 0 else raw_tag
 
     # OUTBOUND
     outbound = {
@@ -255,7 +264,7 @@ def main():
     tag_counts = Counter()
     outbounds = []
     
-    # Сначала считаем вхождения
+    # Сначала считаем вхождения каждого raw_tag
     for item in parsed_items:
         tag_counts[item["raw_tag"]] += 1
 

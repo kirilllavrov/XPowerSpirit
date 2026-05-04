@@ -10,6 +10,7 @@ OUTBOUNDS_FILE = "/tmp/new_outbounds.json"
 # -----------------------------
 DOMAIN_WHITELIST = [
     # Пример: "example.com"
+    # Если список пуст, используются все сервера из подписки
 ]
 
 def load_outbounds():
@@ -133,7 +134,7 @@ def main():
     # ЕСЛИ СЕРВЕР ОДИН
     # -----------------------------
     if len(filtered_obs) == 1:
-        only_tag = filtered_obs[0].get("tag", "proxy-single")
+        only_tag = filtered_obs[0].get("tag", "proxy_single")
         cfg = base_config()
         cfg["outbounds"] = filtered_obs + [
             {"protocol": "freedom", "tag": "direct"},
@@ -201,9 +202,12 @@ def main():
     ]
 
     # Добавляем правила для баланкеров только если они существуют
+    
+    # Стриминг и игры направляем на Reality, если он есть
     if reality_tags:
         rules.append({"type": "field", "domain": ["geosite:category-streaming", "geosite:category-games"], "balancerTag": "balancer-reality"})
     
+    # Весь остальной трафик распределяем по типам
     if xhttp_tags:
         rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-xhttp"})
     
@@ -220,7 +224,7 @@ def main():
     ]
     
     cfg["observatory"] = {
-        "subjectSelector": ["proxy-"],
+        "subjectSelector": ["proxy_"],
         "probeURL": "https://www.google.com/generate_204",
         "probeInterval": "120s",
         "enableConcurrency": True

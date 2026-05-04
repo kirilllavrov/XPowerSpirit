@@ -104,13 +104,10 @@ install -m 755 "$TMP_DIR/xray" /usr/local/bin/xray
 echo "✓ Xray установлен"
 
 # ---------------------------------------------------------
-# 7. Установка наших файлов
+# 7. Установка файлов
 # ---------------------------------------------------------
 echo "[+] Устанавливаем update-xray.sh, parser, generator..."
 
-# Для безопасности лучше использовать конкретный хеш коммита или тег, 
-# но здесь оставлено main для простоты обновления самого инсталлятора.
-# В продакшене рекомендуется пинить версию.
 BASE_URL="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/main"
 
 curl -sL "${BASE_URL}/update-xray.sh" -o /usr/local/bin/update-xray.sh

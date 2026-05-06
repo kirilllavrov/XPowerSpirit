@@ -22,8 +22,8 @@ readonly GENERATOR_SCRIPT="/usr/local/bin/xray-generate-config.py"
 readonly GITHUB_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly GITHUB_DOWNLOAD="https://github.com/XTLS/Xray-core/releases/download"
 
-readonly GEOIP_URL="https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat"
-readonly GEOSITE_URL="https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
+readonly GEOIP_URL="https://cdn.jsdelivr.net/gh/kirilllavrov/geoip-builder@release/geoip.dat"
+readonly GEOSITE_URL="https://cdn.jsdelivr.net/gh/kirilllavrov/geosite-builder@release/geosite.dat"
 
 readonly PARSER_OUTPUT="/tmp/new_outbounds.json"
 

@@ -33,153 +33,153 @@ readonly PARSER_OUTPUT="/tmp/new_outbounds.json"
 
 # Определение архитектуры
 detect_arch() {
-    case "$(uname -m)" in
-        i386|i686)       echo "32" ;;
-        x86_64|amd64)    echo "64" ;;
-        armv5tel|armv6l|armv7l) echo "arm32-v7a" ;;
-        aarch64|armv8l)  echo "arm64-v8a" ;;
-        *)               echo "64" ;;
-    esac
+	case "$(uname -m)" in
+	i386 | i686) echo "32" ;;
+	x86_64 | amd64) echo "64" ;;
+	armv5tel | armv6l | armv7l) echo "arm32-v7a" ;;
+	aarch64 | armv8l) echo "arm64-v8a" ;;
+	*) echo "64" ;;
+	esac
 }
 
 # Получение последней версии Xray
 get_latest_version() {
-    curl -s --max-time 10 "$GITHUB_API" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p'
+	curl -s --max-time 10 "$GITHUB_API" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p'
 }
 
 # Проверка зависимостей
 check_deps() {
-    for bin in jq python3 curl unzip; do
-        if ! command -v "$bin" >/dev/null 2>&1; then
-            echo "[!] Требуется $bin, но он не найден"
-            exit 1
-        fi
-    done
+	for bin in jq python3 curl unzip; do
+		if ! command -v "$bin" >/dev/null 2>&1; then
+			echo "[!] Требуется $bin, но он не найден"
+			exit 1
+		fi
+	done
 }
 
 # HWID
 get_hwid() {
-    if [ -f /etc/machine-id ]; then
-        cat /etc/machine-id
-    else
-        uuidgen | tr -d '-'
-    fi
+	if [ -f /etc/machine-id ]; then
+		cat /etc/machine-id
+	else
+		uuidgen | tr -d '-'
+	fi
 }
 
 # Загрузка подписки
 load_subscription() {
-    if [ -f "$SUB_FILE" ]; then
-        tr -d '[:space:]' < "$SUB_FILE"
-    fi
+	if [ -f "$SUB_FILE" ]; then
+		tr -d '[:space:]' <"$SUB_FILE"
+	fi
 }
 
 # Обновление geodata
 download_geo_if_changed() {
-    local url="$1"
-    local dest="$2"
-    local sha_file="${dest}.sha256sum"
+	local url="$1"
+	local dest="$2"
+	local sha_file="${dest}.sha256sum"
 
-    echo "[*] Проверяем geodata: $dest"
+	echo "[*] Проверяем geodata: $dest"
 
-    local remote_sha
-    remote_sha=$(curl -s "${url}.sha256sum" | awk '{print $1}')
-    if [ -z "$remote_sha" ]; then
-        echo "    [!] Не удалось получить SHA256"
-        return 1
-    fi
+	local remote_sha
+	remote_sha=$(curl -s "${url}.sha256sum" | awk '{print $1}')
+	if [ -z "$remote_sha" ]; then
+		echo "    [!] Не удалось получить SHA256"
+		return 1
+	fi
 
-    if [ -f "$sha_file" ] && [ "$(cat "$sha_file")" = "$remote_sha" ]; then
-        echo "    ✓ Файл не изменился — пропускаем"
-        return 0
-    fi
+	if [ -f "$sha_file" ] && [ "$(cat "$sha_file")" = "$remote_sha" ]; then
+		echo "    ✓ Файл не изменился — пропускаем"
+		return 0
+	fi
 
-    echo "    → Файл изменился, скачиваем..."
-    curl -L --fail -o "$dest" "$url" || {
-        echo "    [!] Ошибка скачивания"
-        return 1
-    }
+	echo "    → Файл изменился, скачиваем..."
+	curl -L --fail -o "$dest" "$url" || {
+		echo "    [!] Ошибка скачивания"
+		return 1
+	}
 
-    local local_sha
-    local_sha=$(sha256sum "$dest" | awk '{print $1}')
-    if [ "$local_sha" != "$remote_sha" ]; then
-        echo "    [!] Ошибка SHA256!"
-        rm -f "$dest"
-        exit 1
-    fi
+	local local_sha
+	local_sha=$(sha256sum "$dest" | awk '{print $1}')
+	if [ "$local_sha" != "$remote_sha" ]; then
+		echo "    [!] Ошибка SHA256!"
+		rm -f "$dest"
+		exit 1
+	fi
 
-    echo "$remote_sha" > "$sha_file"
-    echo "    ✓ Файл обновлён"
+	echo "$remote_sha" >"$sha_file"
+	echo "    ✓ Файл обновлён"
 }
 
 # Обновление Xray
 download_xray_if_changed() {
-    local url="$1"
-    local dest="$2"
-    local sha_file="${dest}.sha256sum"
-    local dgst_url="${url}.dgst"
-    local dgst_file="$XRAY_STATE_DIR/xray.dgst"
+	local url="$1"
+	local dest="$2"
+	local sha_file="${dest}.sha256sum"
+	local dgst_url="${url}.dgst"
+	local dgst_file="$XRAY_STATE_DIR/xray.dgst"
 
-    echo "[*] Проверяем Xray ZIP: $dest"
+	echo "[*] Проверяем Xray ZIP: $dest"
 
-    if ! curl -sL --fail -o "$dgst_file" "$dgst_url"; then
-        echo "    [!] Не удалось скачать .dgst, пропускаем обновление Xray"
-        return 1
-    fi
+	if ! curl -sL --fail -o "$dgst_file" "$dgst_url"; then
+		echo "    [!] Не удалось скачать .dgst, пропускаем обновление Xray"
+		return 1
+	fi
 
-    local remote_sha
-    remote_sha=$(grep -E 'SHA2-256=|SHA256=|SHA256 ' "$dgst_file" \
-        | sed 's/.*= *//' \
-        | tr -d '[:space:]' || true)
+	local remote_sha
+	remote_sha=$(grep -E 'SHA2-256=|SHA256=|SHA256 ' "$dgst_file" |
+		sed 's/.*= *//' |
+		tr -d '[:space:]' || true)
 
-    if [ -z "$remote_sha" ]; then
-        echo "    [!] Не удалось получить SHA256 из .dgst, пропускаем обновление Xray"
-        return 1
-    fi
+	if [ -z "$remote_sha" ]; then
+		echo "    [!] Не удалось получить SHA256 из .dgst, пропускаем обновление Xray"
+		return 1
+	fi
 
-    if [ -f "$sha_file" ] && [ "$(cat "$sha_file")" = "$remote_sha" ]; then
-        echo "    ✓ Xray не изменился — пропускаем"
-        return 1
-    fi
+	if [ -f "$sha_file" ] && [ "$(cat "$sha_file")" = "$remote_sha" ]; then
+		echo "    ✓ Xray не изменился — пропускаем"
+		return 1
+	fi
 
-    echo "    → Xray изменился, скачиваем ZIP..."
-    if ! curl -L --fail -o "$dest" "$url"; then
-        echo "    [!] Ошибка скачивания Xray ZIP"
-        return 1
-    fi
+	echo "    → Xray изменился, скачиваем ZIP..."
+	if ! curl -L --fail -o "$dest" "$url"; then
+		echo "    [!] Ошибка скачивания Xray ZIP"
+		return 1
+	fi
 
-    local local_sha
-    local_sha=$(sha256sum "$dest" | awk '{print $1}')
-    if [ "$local_sha" != "$remote_sha" ]; then
-        echo "    [!] Ошибка SHA256!"
-        rm -f "$dest"
-        exit 1
-    fi
+	local local_sha
+	local_sha=$(sha256sum "$dest" | awk '{print $1}')
+	if [ "$local_sha" != "$remote_sha" ]; then
+		echo "    [!] Ошибка SHA256!"
+		rm -f "$dest"
+		exit 1
+	fi
 
-    echo "$remote_sha" > "$sha_file"
-    echo "    ✓ Xray ZIP обновлён"
-    return 0
+	echo "$remote_sha" >"$sha_file"
+	echo "    ✓ Xray ZIP обновлён"
+	return 0
 }
 
 # Бэкап конфига
 backup_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        mkdir -p "$BACKUP_DIR"
-        cp "$CONFIG_FILE" "$BACKUP_DIR/config_$(date +%Y%m%d_%H%M%S).json"
-        ls -1t "$BACKUP_DIR"/config_*.json | tail -n +6 | xargs rm -f 2>/dev/null || true
-    fi
+	if [ -f "$CONFIG_FILE" ]; then
+		mkdir -p "$BACKUP_DIR"
+		cp "$CONFIG_FILE" "$BACKUP_DIR/config_$(date +%Y%m%d_%H%M%S).json"
+		ls -1t "$BACKUP_DIR"/config_*.json | tail -n +6 | xargs rm -f 2>/dev/null || true
+	fi
 }
 
 # Восстановление из бэкапа
 restore_backup() {
-    local last_backup
-    last_backup=$(ls -1t "$BACKUP_DIR"/config_*.json 2>/dev/null | head -n1)
-    if [ -n "$last_backup" ]; then
-        cp "$last_backup" "$CONFIG_FILE"
-        echo "[i] Восстановлен бэкап: $last_backup"
-        systemctl restart xray
-    else
-        echo "[!!] Нет бэкапов для отката!"
-    fi
+	local last_backup
+	last_backup=$(ls -1t "$BACKUP_DIR"/config_*.json 2>/dev/null | head -n1)
+	if [ -n "$last_backup" ]; then
+		cp "$last_backup" "$CONFIG_FILE"
+		echo "[i] Восстановлен бэкап: $last_backup"
+		systemctl restart xray
+	else
+		echo "[!!] Нет бэкапов для отката!"
+	fi
 }
 
 # ============================================================
@@ -197,8 +197,8 @@ HWID=$(get_hwid)
 SUB_URL=$(load_subscription)
 
 if [ -z "$SUB_URL" ]; then
-    echo "[!] Подписка не указана"
-    exit 1
+	echo "[!] Подписка не указана"
+	exit 1
 fi
 
 # Обновление Xray
@@ -208,8 +208,8 @@ ARCH=$(detect_arch)
 LATEST_VERSION=$(get_latest_version)
 
 if [ -z "$LATEST_VERSION" ]; then
-    echo "[!] Не удалось получить последнюю версию Xray"
-    exit 1
+	echo "[!] Не удалось получить последнюю версию Xray"
+	exit 1
 fi
 
 echo "  - Последняя версия: $LATEST_VERSION"
@@ -218,16 +218,16 @@ ZIP_URL="${GITHUB_DOWNLOAD}/${LATEST_VERSION}/Xray-linux-${ARCH}.zip"
 ZIP_FILE="$XRAY_STATE_DIR/xray.zip"
 
 if download_xray_if_changed "$ZIP_URL" "$ZIP_FILE"; then
-    echo "  - Распаковываем Xray..."
-    rm -rf "$XRAY_STATE_DIR/unpack"
-    mkdir -p "$XRAY_STATE_DIR/unpack"
-    unzip -q "$ZIP_FILE" -d "$XRAY_STATE_DIR/unpack"
+	echo "  - Распаковываем Xray..."
+	rm -rf "$XRAY_STATE_DIR/unpack"
+	mkdir -p "$XRAY_STATE_DIR/unpack"
+	unzip -q "$ZIP_FILE" -d "$XRAY_STATE_DIR/unpack"
 
-    echo "  - Обновляем $XRAY_BIN"
-    install -m 755 "$XRAY_STATE_DIR/unpack/xray" "$XRAY_BIN"
-    echo "    ✓ Xray обновлён"
+	echo "  - Обновляем $XRAY_BIN"
+	install -m 755 "$XRAY_STATE_DIR/unpack/xray" "$XRAY_BIN"
+	echo "    ✓ Xray обновлён"
 else
-    echo "    ✓ Xray уже актуален"
+	echo "    ✓ Xray уже актуален"
 fi
 
 # Обновление geodata
@@ -242,16 +242,16 @@ SUB_DATA=$(curl -s -L -m 15 -H "User-Agent: Happ" -H "x-hwid: $HWID" "$SUB_URL")
 echo "[+] Парсим подписку..."
 PARSER_TMP=$(mktemp /tmp/parser_out.XXXXXX)
 
-if ! echo "$SUB_DATA" | python3 "$PARSER_SCRIPT" > "$PARSER_TMP"; then
-    echo "[!] Ошибка выполнения парсера"
-    rm -f "$PARSER_TMP"
-    exit 1
+if ! echo "$SUB_DATA" | python3 "$PARSER_SCRIPT" >"$PARSER_TMP"; then
+	echo "[!] Ошибка выполнения парсера"
+	rm -f "$PARSER_TMP"
+	exit 1
 fi
 
 if ! jq empty "$PARSER_TMP" >/dev/null 2>&1; then
-    echo "[!] Ошибка: некорректный JSON от парсера"
-    rm -f "$PARSER_TMP"
-    exit 1
+	echo "[!] Ошибка: некорректный JSON от парсера"
+	rm -f "$PARSER_TMP"
+	exit 1
 fi
 
 COUNT=$(jq length "$PARSER_TMP")
@@ -266,28 +266,28 @@ backup_config
 echo "[+] Генерируем конфиг..."
 CONFIG_TMP="${XRAY_ETC_DIR}/.config_new.json"
 
-python3 "$GENERATOR_SCRIPT" > "$CONFIG_TMP" 2>/tmp/config_gen_error.log
+python3 "$GENERATOR_SCRIPT" >"$CONFIG_TMP" 2>/tmp/config_gen_error.log
 GEN_EXIT=$?
 
 if [ $GEN_EXIT -ne 0 ]; then
-    echo "[!] Ошибка генерации конфига (код $GEN_EXIT)"
-    cat /tmp/config_gen_error.log
-    rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
-    exit 1
+	echo "[!] Ошибка генерации конфига (код $GEN_EXIT)"
+	cat /tmp/config_gen_error.log
+	rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
+	exit 1
 fi
 
 if [ ! -s "$CONFIG_TMP" ]; then
-    echo "[!] Ошибка: сгенерированный конфиг пустой"
-    cat /tmp/config_gen_error.log 2>/dev/null
-    rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
-    exit 1
+	echo "[!] Ошибка: сгенерированный конфиг пустой"
+	cat /tmp/config_gen_error.log 2>/dev/null
+	rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
+	exit 1
 fi
 
 if ! jq empty "$CONFIG_TMP" >/dev/null 2>&1; then
-    echo "[!] Ошибка: невалидный JSON"
-    head -5 "$CONFIG_TMP"
-    rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
-    exit 1
+	echo "[!] Ошибка: невалидный JSON"
+	head -5 "$CONFIG_TMP"
+	rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
+	exit 1
 fi
 
 chmod 644 "$CONFIG_TMP"
@@ -296,18 +296,18 @@ rm -f /tmp/config_gen_error.log
 # Тест и перезапуск
 echo "[+] Тестируем конфиг..."
 if "$XRAY_BIN" run -test -config "$CONFIG_TMP"; then
-    mv "$CONFIG_TMP" "$CONFIG_FILE"
-    systemctl restart xray
-    echo "[✓] Успешно обновлено и перезапущено!"
+	mv "$CONFIG_TMP" "$CONFIG_FILE"
+	systemctl restart xray
+	echo "[✓] Успешно обновлено и перезапущено!"
 else
-    echo "[!] Ошибка: новый конфиг некорректен"
-    echo "--- Диагностика ---"
-    echo "Размер конфига: $(wc -c < "$CONFIG_TMP") байт"
-    head -3 "$CONFIG_TMP"
-    "$XRAY_BIN" run -test -config "$CONFIG_TMP" 2>&1 || true
-    rm -f "$CONFIG_TMP"
-    restore_backup
-    exit 1
+	echo "[!] Ошибка: новый конфиг некорректен"
+	echo "--- Диагностика ---"
+	echo "Размер конфига: $(wc -c <"$CONFIG_TMP") байт"
+	head -3 "$CONFIG_TMP"
+	"$XRAY_BIN" run -test -config "$CONFIG_TMP" 2>&1 || true
+	rm -f "$CONFIG_TMP"
+	restore_backup
+	exit 1
 fi
 
 echo "===== Xray Update Finished: $(date) ====="

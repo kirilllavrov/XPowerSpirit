@@ -18,6 +18,8 @@ readonly TMP_INSTALL_DIR="/tmp/xray_install"
 readonly SUB_FILE="${XRAY_ETC_DIR}/subscription.url"
 readonly CONFIG_FILE="${XRAY_ETC_DIR}/config.json"
 readonly BACKUP_DIR="${XRAY_ETC_DIR}/backup"
+readonly SHA_FILE="${XRAY_STATE_DIR}/xray.zip.sha256sum"
+readonly DGST_FILE="${XRAY_STATE_DIR}/xray.dgst"
 
 # Скрипты
 readonly UPDATE_SCRIPT="${XRAY_BIN_DIR}/update-xray.sh"
@@ -72,6 +74,20 @@ get_latest_version() {
     curl -s --max-time 10 "$GITHUB_API" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p'
 }
 
+# Получение установленной версии Xray
+get_installed_version() {
+    if [ -x "$XRAY_BIN" ]; then
+        "$XRAY_BIN" version 2>/dev/null | head -1 | awk '{print $2}'
+    fi
+}
+
+# Извлечение SHA256 из .dgst
+extract_sha256() {
+    grep -E 'SHA2-256=|SHA256=|SHA256 ' "$1" \
+        | sed 's/.*= *//' \
+        | tr -d '[:space:]' || true
+}
+
 # Установка зависимостей
 install_deps() {
     echo "[+] Устанавливаем зависимости..."
@@ -108,17 +124,61 @@ install_xray() {
     local arch="$2"
 
     echo "[+] Устанавливаем Xray..."
-    echo "  → Версия: $version, архитектура: $arch"
+
+    # Проверяем установленную версию
+    local installed_ver
+    installed_ver=$(get_installed_version)
+    local latest_ver_num="${version#v}"
+
+    if [ -n "$installed_ver" ] && [ "$installed_ver" = "$latest_ver_num" ]; then
+        echo "  → Xray уже актуальной версии $version, пропускаем установку"
+        return 0
+    fi
+
+    [ -n "$installed_ver" ] && echo "  → Текущая версия: $installed_ver, будет обновлено до $latest_ver_num"
+    [ -z "$installed_ver" ] && echo "  → Версия: $version, архитектура: $arch"
 
     local zip_url="${GITHUB_DOWNLOAD}/${version}/Xray-linux-${arch}.zip"
     local zip_file="${TMP_INSTALL_DIR}/xray.zip"
 
-    mkdir -p "$TMP_INSTALL_DIR"
+    mkdir -p "$XRAY_STATE_DIR" "$TMP_INSTALL_DIR"
 
-    curl -L --fail -o "$zip_file" "$zip_url" || {
-        echo "[!] Ошибка скачивания Xray"
+    # Скачиваем .dgst
+    echo "  → Скачиваем .dgst..."
+    curl -sL --fail -o "$DGST_FILE" "${zip_url}.dgst" || {
+        echo "[!] Ошибка скачивания .dgst"
         exit 1
     }
+
+    local remote_sha
+    remote_sha=$(extract_sha256 "$DGST_FILE")
+    if [ -z "$remote_sha" ]; then
+        echo "[!] Не удалось извлечь SHA256 из .dgst"
+        exit 1
+    fi
+
+    # Проверяем, есть ли уже ZIP с таким SHA
+    if [ -f "$SHA_FILE" ] && [ "$(cat "$SHA_FILE")" = "$remote_sha" ] && [ -f "$zip_file" ]; then
+        echo "  → Найден локальный ZIP с тем же SHA, повторное скачивание не требуется"
+    else
+        echo "  → Скачиваем Xray ZIP (${version})..."
+        curl -L --fail -o "$zip_file" "$zip_url" || {
+            echo "[!] Ошибка скачивания Xray ZIP"
+            exit 1
+        }
+
+        local local_sha
+        local_sha=$(sha256sum "$zip_file" | awk '{print $1}')
+        if [ "$local_sha" != "$remote_sha" ]; then
+            echo "[!] Ошибка: SHA не совпадает!"
+            echo "  ожидалось: $remote_sha"
+            echo "  получено : $local_sha"
+            rm -f "$zip_file"
+            exit 1
+        fi
+
+        echo "$remote_sha" > "$SHA_FILE"
+    fi
 
     unzip -q "$zip_file" -d "$TMP_INSTALL_DIR" || {
         echo "[!] Ошибка распаковки Xray"

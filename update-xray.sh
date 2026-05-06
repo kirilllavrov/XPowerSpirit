@@ -22,8 +22,8 @@ readonly GENERATOR_SCRIPT="/usr/local/bin/xray-generate-config.py"
 readonly GITHUB_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 readonly GITHUB_DOWNLOAD="https://github.com/XTLS/Xray-core/releases/download"
 
-readonly GEOIP_URL="https://cdn.jsdelivr.net/gh/kirilllavrov/geoip-builder@release/geoip.dat"
-readonly GEOSITE_URL="https://cdn.jsdelivr.net/gh/kirilllavrov/geosite-builder@release/geosite.dat"
+readonly GEOIP_URL="https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat"
+readonly GEOSITE_URL="https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
 
 readonly PARSER_OUTPUT="/tmp/new_outbounds.json"
 
@@ -121,92 +121,6 @@ download_xray_if_changed() {
 
     echo "[*] Проверяем Xray ZIP: $dest"
 
-    curl -s -L -o "$dgst_file" "$dgst_url"
-
-    local remote_sha
-    remote_sha=$(grep -E 'SHA2-256=|SHA256=|SHA256 ' "$dgst_file" \
-        | sed 's/.*= *//' \
-        | tr -d '[:space:]' || true)
-
-    if [ -z "$remote_sha" ]; then
-        echo "    [!] Не удалось получить SHA256 из .dgst"
-        exit 1
-    fi
-
-    if [ -f "$sha_file" ] && [ "$(cat "$sha_file")" = "$remote_sha" ]; then
-        echo "    ✓ Xray не изменился — пропускаем"
-        return 1  # не обновлён
-    fi
-
-    echo "    → Xray изменился, скачиваем ZIP..."
-    curl -L --fail -o "$dest" "$url" || {
-        echo "    [!] Ошибка скачивания Xray ZIP"
-        exit 1
-    }
-
-    local local_sha
-    local_sha=$(sha256sum "$dest" | awk '{print $1}')
-    if [ "$local_sha" != "$remote_sha" ]; then
-        echo "    [!] Ошибка SHA256!"
-        rm -f "$dest"
-        exit 1
-    fi
-
-    echo "$remote_sha" > "$sha_file"
-    echo "    ✓ Xray ZIP обновлён"
-    return 0  # обновлён
-}
-
-# Бэкап конфига
-backup_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        cp "$CONFIG_FILE" "$BACKUP_DIR/config_$(date +%Y%m%d_%H%M%S).json"
-        ls -1t "$BACKUP_DIR"/config_*.json | tail -n +6 | xargs rm -f 2>/dev/null || true
-    fi
-}
-
-# Восстановление из бэкапа
-restore_backup() {
-    local last_backup
-    last_backup=$(ls -1t "$BACKUP_DIR"/config_*.json 2>/dev/null | head -n1)
-    if [ -n "$last_backup" ]; then
-        cp "$last_backup" "$CONFIG_FILE"
-        echo "[i] Восстановлен бэкап: $last_backup"
-        systemctl restart xray
-    else
-        echo "[!!] Нет бэкапов для отката!"
-    fi
-}
-
-# ============================================================
-# MAIN
-# ============================================================
-
-mkdir -p "$XRAY_LOG_DIR" "$XRAY_STATE_DIR" "$GEO_DIR" "$BACKUP_DIR"
-chmod 755 "$XRAY_LOG_DIR"
-
-echo "===== Xray Update Started: $(date) ====="
-
-check_deps
-
-HWID=$(get_hwid)
-SUB_URL=$(load_subscription)
-
-if [ -z "$SUB_URL" ]; then
-    echo "[!] Подписка не указана"
-    exit 1
-fi
-
-# Обновление Xray
-download_xray_if_changed() {
-    local url="$1"
-    local dest="$2"
-    local sha_file="${dest}.sha256sum"
-    local dgst_url="${url}.dgst"
-    local dgst_file="$XRAY_STATE_DIR/xray.dgst"
-
-    echo "[*] Проверяем Xray ZIP: $dest"
-
     # Скачиваем .dgst с проверкой
     if ! curl -sL --fail -o "$dgst_file" "$dgst_url"; then
         echo "    [!] Не удалось скачать .dgst, пропускаем обновление Xray"
@@ -247,6 +161,76 @@ download_xray_if_changed() {
     return 0  # обновлён
 }
 
+# Бэкап конфига
+backup_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        mkdir -p "$BACKUP_DIR"
+        cp "$CONFIG_FILE" "$BACKUP_DIR/config_$(date +%Y%m%d_%H%M%S).json"
+        ls -1t "$BACKUP_DIR"/config_*.json | tail -n +6 | xargs rm -f 2>/dev/null || true
+    fi
+}
+
+# Восстановление из бэкапа
+restore_backup() {
+    local last_backup
+    last_backup=$(ls -1t "$BACKUP_DIR"/config_*.json 2>/dev/null | head -n1)
+    if [ -n "$last_backup" ]; then
+        cp "$last_backup" "$CONFIG_FILE"
+        echo "[i] Восстановлен бэкап: $last_backup"
+        systemctl restart xray
+    else
+        echo "[!!] Нет бэкапов для отката!"
+    fi
+}
+
+# ============================================================
+# MAIN
+# ============================================================
+
+mkdir -p "$XRAY_LOG_DIR" "$XRAY_STATE_DIR" "$GEO_DIR" "$BACKUP_DIR"
+chmod 755 "$XRAY_LOG_DIR"
+
+echo "===== Xray Update Started: $(date) ====="
+
+check_deps
+
+HWID=$(get_hwid)
+SUB_URL=$(load_subscription)
+
+if [ -z "$SUB_URL" ]; then
+    echo "[!] Подписка не указана"
+    exit 1
+fi
+
+# Обновление Xray
+echo "[+] Проверяем обновления Xray..."
+
+ARCH=$(detect_arch)
+LATEST_VERSION=$(get_latest_version)
+
+if [ -z "$LATEST_VERSION" ]; then
+    echo "[!] Не удалось получить последнюю версию Xray"
+    exit 1
+fi
+
+echo "  - Последняя версия: $LATEST_VERSION"
+
+ZIP_URL="${GITHUB_DOWNLOAD}/${LATEST_VERSION}/Xray-linux-${ARCH}.zip"
+ZIP_FILE="$XRAY_STATE_DIR/xray.zip"
+
+if download_xray_if_changed "$ZIP_URL" "$ZIP_FILE"; then
+    echo "  - Распаковываем Xray..."
+    rm -rf "$XRAY_STATE_DIR/unpack"
+    mkdir -p "$XRAY_STATE_DIR/unpack"
+    unzip -q "$ZIP_FILE" -d "$XRAY_STATE_DIR/unpack"
+
+    echo "  - Обновляем $XRAY_BIN"
+    install -m 755 "$XRAY_STATE_DIR/unpack/xray" "$XRAY_BIN"
+    echo "    ✓ Xray обновлён"
+else
+    echo "    ✓ Xray уже актуален"
+fi
+
 # Обновление geodata
 echo "[+] Проверяем обновления geodata..."
 download_geo_if_changed "$GEOIP_URL" "$GEO_DIR/geoip.dat"
@@ -275,17 +259,41 @@ COUNT=$(jq length "$PARSER_TMP")
 echo "[+] Найдено серверов: $COUNT"
 
 mv "$PARSER_TMP" "$PARSER_OUTPUT"
+chmod 644 "$PARSER_OUTPUT"
 
 # Бэкап и генерация
 backup_config
 
 echo "[+] Генерируем конфиг..."
 CONFIG_TMP=$(mktemp /tmp/config_gen.XXXXXX)
-if ! python3 "$GENERATOR_SCRIPT" > "$CONFIG_TMP"; then
-    echo "[!] Ошибка генерации конфига"
-    rm -f "$CONFIG_TMP"
+
+python3 "$GENERATOR_SCRIPT" > "$CONFIG_TMP" 2>/tmp/config_gen_error.log
+GEN_EXIT=$?
+
+if [ $GEN_EXIT -ne 0 ]; then
+    echo "[!] Ошибка генерации конфига (код $GEN_EXIT)"
+    cat /tmp/config_gen_error.log
+    rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
     exit 1
 fi
+
+if [ ! -s "$CONFIG_TMP" ]; then
+    echo "[!] Ошибка: сгенерированный конфиг пустой"
+    cat /tmp/config_gen_error.log 2>/dev/null
+    rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
+    exit 1
+fi
+
+if ! jq empty "$CONFIG_TMP" >/dev/null 2>&1; then
+    echo "[!] Ошибка: невалидный JSON"
+    echo "--- первые строки ---"
+    head -5 "$CONFIG_TMP"
+    rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
+    exit 1
+fi
+
+chmod 644 "$CONFIG_TMP"
+rm -f /tmp/config_gen_error.log
 
 # Тест и перезапуск
 echo "[+] Тестируем конфиг..."
@@ -295,6 +303,11 @@ if "$XRAY_BIN" run -test -config "$CONFIG_TMP"; then
     echo "[✓] Успешно обновлено и перезапущено!"
 else
     echo "[!] Ошибка: новый конфиг некорректен"
+    echo "--- Диагностика ---"
+    echo "Размер конфига: $(wc -c < "$CONFIG_TMP") байт"
+    echo "Первые 3 строки:"
+    head -3 "$CONFIG_TMP"
+    "$XRAY_BIN" run -test -config "$CONFIG_TMP" 2>&1 || true
     rm -f "$CONFIG_TMP"
     restore_backup
     exit 1

@@ -198,33 +198,54 @@ if [ -z "$SUB_URL" ]; then
 fi
 
 # Обновление Xray
-echo "[+] Проверяем обновления Xray..."
+download_xray_if_changed() {
+    local url="$1"
+    local dest="$2"
+    local sha_file="${dest}.sha256sum"
+    local dgst_url="${url}.dgst"
+    local dgst_file="$XRAY_STATE_DIR/xray.dgst"
 
-ARCH=$(detect_arch)
-LATEST_VERSION=$(get_latest_version)
+    echo "[*] Проверяем Xray ZIP: $dest"
 
-if [ -z "$LATEST_VERSION" ]; then
-    echo "[!] Не удалось получить последнюю версию Xray"
-    exit 1
-fi
+    # Скачиваем .dgst с проверкой
+    if ! curl -sL --fail -o "$dgst_file" "$dgst_url"; then
+        echo "    [!] Не удалось скачать .dgst, пропускаем обновление Xray"
+        return 1
+    fi
 
-echo "  - Последняя версия: $LATEST_VERSION"
+    local remote_sha
+    remote_sha=$(grep -E 'SHA2-256=|SHA256=|SHA256 ' "$dgst_file" \
+        | sed 's/.*= *//' \
+        | tr -d '[:space:]' || true)
 
-ZIP_URL="${GITHUB_DOWNLOAD}/${LATEST_VERSION}/Xray-linux-${ARCH}.zip"
-ZIP_FILE="$XRAY_STATE_DIR/xray.zip"
+    if [ -z "$remote_sha" ]; then
+        echo "    [!] Не удалось получить SHA256 из .dgst, пропускаем обновление Xray"
+        return 1
+    fi
 
-if download_xray_if_changed "$ZIP_URL" "$ZIP_FILE"; then
-    echo "  - Распаковываем Xray..."
-    rm -rf "$XRAY_STATE_DIR/unpack"
-    mkdir -p "$XRAY_STATE_DIR/unpack"
-    unzip -q "$ZIP_FILE" -d "$XRAY_STATE_DIR/unpack"
+    if [ -f "$sha_file" ] && [ "$(cat "$sha_file")" = "$remote_sha" ]; then
+        echo "    ✓ Xray не изменился — пропускаем"
+        return 1  # не обновлён
+    fi
 
-    echo "  - Обновляем $XRAY_BIN"
-    install -m 755 "$XRAY_STATE_DIR/unpack/xray" "$XRAY_BIN"
-    echo "    ✓ Xray обновлён"
-else
-    echo "    ✓ Xray уже актуален"
-fi
+    echo "    → Xray изменился, скачиваем ZIP..."
+    if ! curl -L --fail -o "$dest" "$url"; then
+        echo "    [!] Ошибка скачивания Xray ZIP"
+        return 1
+    fi
+
+    local local_sha
+    local_sha=$(sha256sum "$dest" | awk '{print $1}')
+    if [ "$local_sha" != "$remote_sha" ]; then
+        echo "    [!] Ошибка SHA256!"
+        rm -f "$dest"
+        exit 1
+    fi
+
+    echo "$remote_sha" > "$sha_file"
+    echo "    ✓ Xray ZIP обновлён"
+    return 0  # обновлён
+}
 
 # Обновление geodata
 echo "[+] Проверяем обновления geodata..."

@@ -26,7 +26,6 @@ def load_outbounds():
     return []
 
 def filter_by_domain_whitelist(all_obs):
-    # Если whitelist пуст — пропускаем все сервера
     if not DOMAIN_WHITELIST:
         return all_obs
     
@@ -54,46 +53,18 @@ def base_config():
                 "dns.google": "8.8.8.8"
             },
             "queryStrategy": "UseIPv4",
-            "enableParallelQuery": True,
             "disableCache": False,
-            "cacheStrategy": "cacheEnabled",
             "serveStale": True,
             "disableFallback": False,
             "servers": [
                 {
-                    "address": "195.208.4.1",
-                    "port": 53,
-                    "domains": [
-                        "geosite:category-ru",
-                        "geosite:category-browser",
-                        "geosite:category-mobile",
-                        "geosite:category-cdn-ru",
-                        "geosite:private"
-                    ],
-                    "skipFallback": False
-                },
-                {
-                    "address": "195.208.5.1",
-                    "port": 53,
-                    "domains": [
-                        "geosite:category-ru",
-                        "geosite:category-browser",
-                        "geosite:category-mobile",
-                        "geosite:category-cdn-ru",
-                        "geosite:private"
-                    ],
-                    "skipFallback": False
-                },
-                {
                     "address": "https://cloudflare-dns.com/dns-query",
-                    "domains": [
-                        "geosite:category-streaming",
-                        "geosite:category-games"
-                    ],
                     "skipFallback": False
                 },
-                "https://cloudflare-dns.com/dns-query",
-                "https://dns.google/dns-query",
+                {
+                    "address": "https://dns.google/dns-query",
+                    "skipFallback": False
+                }
             ]
         },
         "inbounds": [
@@ -121,9 +92,11 @@ def main():
             {"protocol": "blackhole", "tag": "block"}
         ]
         cfg["routing"] = {
-            "domainStrategy": "ForceIPv4",
+            "domainStrategy": "IPOnDemand",
             "rules": [
                 {"type": "field", "domain": ["geosite:category-ads"], "outboundTag": "block"},
+                {"type": "field", "ip": ["geoip:ru", "geoip:private"], "outboundTag": "direct"},
+                {"type": "field", "domain": ["geosite:private", "geosite:category-ru"], "outboundTag": "direct"},
                 {"type": "field", "network": "tcp,udp", "outboundTag": "direct"}
             ]
         }
@@ -141,14 +114,14 @@ def main():
             {"protocol": "blackhole", "tag": "block"}
         ]
         cfg["routing"] = {
-            "domainStrategy": "ForceIPv4",
+            "domainStrategy": "IPOnDemand",
             "rules": [
                 {"type": "field", "domain": ["geosite:category-ads"], "outboundTag": "block"},
-                {"type": "field", "domain": ["geosite:category-streaming", "geosite:category-games"], "outboundTag": only_tag},
                 {"type": "field", "ip": ["geoip:ru", "geoip:private"], "outboundTag": "direct"},
                 {"type": "field", "domain": ["geosite:private", "geosite:category-browser",
                                              "geosite:category-cdn-ru", "geosite:category-mobile",
                                              "geosite:category-ru"], "outboundTag": "direct"},
+                {"type": "field", "domain": ["geosite:category-streaming", "geosite:category-games"], "outboundTag": only_tag},
                 {"type": "field", "network": "tcp,udp", "outboundTag": only_tag}
             ]
         }
@@ -201,13 +174,9 @@ def main():
                                      "geosite:category-ru"], "outboundTag": "direct"}
     ]
 
-    # Добавляем правила для баланкеров только если они существуют
-    
-    # Стриминг и игры направляем на Reality, если он есть
     if reality_tags:
         rules.append({"type": "field", "domain": ["geosite:category-streaming", "geosite:category-games"], "balancerTag": "balancer-reality"})
     
-    # Весь остальной трафик распределяем по типам
     if xhttp_tags:
         rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-xhttp"})
     
@@ -231,7 +200,7 @@ def main():
     }
     
     cfg["routing"] = {
-        "domainStrategy": "ForceIPv4",
+        "domainStrategy": "IPOnDemand",
         "balancers": balancers,
         "rules": rules
     }

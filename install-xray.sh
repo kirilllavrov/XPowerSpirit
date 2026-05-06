@@ -1,163 +1,180 @@
 #!/bin/bash
 set -e
 
-echo "===== Xray Installer Started ====="
+# ============================================================
+# Переменные (легко менять при необходимости)
+# ============================================================
 
-# ---------------------------------------------------------
-# 0. Проверка root
-# ---------------------------------------------------------
-if [ "$EUID" -ne 0 ]; then
-    echo "[!] Запустите скрипт через sudo"
-    exit 1
-fi
+# Пути установки
+readonly XRAY_BIN="/usr/local/bin/xray"
+readonly XRAY_BIN_DIR="/usr/local/bin"
+readonly XRAY_ETC_DIR="/usr/local/etc/xray"
+readonly XRAY_SHARE_DIR="/usr/local/share/xray"
+readonly XRAY_LOG_DIR="/var/log/xray"
+readonly XRAY_STATE_DIR="/usr/local/share/xray/state"
+readonly TMP_INSTALL_DIR="/tmp/xray_install"
 
-# ---------------------------------------------------------
-# 1. Парсим аргументы
-# ---------------------------------------------------------
-SUB_URL_ARG=""
-for arg in "$@"; do
-    case $arg in
-        --sub=*)
-            SUB_URL_ARG="${arg#*=}"
-            shift
-            ;;
-    esac
-done
+# Файлы
+readonly SUB_FILE="${XRAY_ETC_DIR}/subscription.url"
+readonly CONFIG_FILE="${XRAY_ETC_DIR}/config.json"
+readonly BACKUP_DIR="${XRAY_ETC_DIR}/backup"
 
-# ---------------------------------------------------------
-# 2. Интерактивный ввод подписки (если аргумент не передан)
-# ---------------------------------------------------------
-if [ -z "$SUB_URL_ARG" ]; then
-    echo
-    echo "Введите ссылку на подписку:"
-    echo "(оставьте пустым — установка будет отменена)"
-    read -r SUB_URL_INPUT
-    if [ -z "$SUB_URL_INPUT" ]; then
-        echo "[!] Подписка не указана. Установка отменена."
+# Скрипты
+readonly UPDATE_SCRIPT="${XRAY_BIN_DIR}/update-xray.sh"
+readonly PARSER_SCRIPT="${XRAY_BIN_DIR}/xray-sub-parser.py"
+readonly GENERATOR_SCRIPT="${XRAY_BIN_DIR}/xray-generate-config.py"
+
+# Репозиторий
+readonly REPO_BASE="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/main"
+
+# systemd
+readonly SERVICE_FILE="/etc/systemd/system/xray.service"
+readonly UPDATE_SERVICE_FILE="/etc/systemd/system/xray-update.service"
+readonly UPDATE_TIMER_FILE="/etc/systemd/system/xray-update.timer"
+
+# GitHub API
+readonly GITHUB_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+readonly GITHUB_DOWNLOAD="https://github.com/XTLS/Xray-core/releases/download"
+
+# ============================================================
+# Функции
+# ============================================================
+
+# Проверка прав
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo "[!] Запустите скрипт через sudo"
         exit 1
-    else
-        SUB_URL="$SUB_URL_INPUT"
-        echo "[i] Используем пользовательскую подписку"
     fi
-else
-    SUB_URL="$SUB_URL_ARG"
-    echo "[i] Используем подписку из аргумента"
-fi
+}
 
-# ---------------------------------------------------------
-# 3. Сохраняем подписку в файл
-# ---------------------------------------------------------
-mkdir -p /usr/local/etc/xray
-echo "$SUB_URL" > /usr/local/etc/xray/subscription.url
-chmod 600 /usr/local/etc/xray/subscription.url
-echo "[+] Подписка сохранена: $SUB_URL"
+# Проверка systemd
+check_systemd() {
+    if [ ! -d "/run/systemd/system" ]; then
+        echo "[!] Этот скрипт поддерживает только системы с systemd"
+        exit 1
+    fi
+}
 
-# ---------------------------------------------------------
-# 4. Установка зависимостей
-# ---------------------------------------------------------
-echo "[+] Устанавливаем зависимости..."
-if command -v apt >/dev/null 2>&1; then
-    apt update -y
-    apt install -y curl unzip jq python3 uuid-runtime
-elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl unzip jq python3 util-linux
-elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl unzip jq python3 util-linux
-elif command -v apk >/dev/null 2>&1; then
-    apk add curl unzip jq python3 util-linux
-else
-    echo "[!] Неизвестный пакетный менеджер"
-    exit 1
-fi
+# Определение архитектуры
+detect_arch() {
+    case "$(uname -m)" in
+        i386|i686)       echo "32" ;;
+        x86_64|amd64)    echo "64" ;;
+        armv5tel|armv6l|armv7l) echo "arm32-v7a" ;;
+        aarch64|armv8l)  echo "arm64-v8a" ;;
+        *)               echo "64" ;;
+    esac
+}
 
-# ---------------------------------------------------------
-# 5. Создание каталогов
-# ---------------------------------------------------------
-echo "[+] Создаём каталоги..."
-mkdir -p /usr/local/bin
-mkdir -p /usr/local/etc/xray
-mkdir -p /usr/local/share/xray
-mkdir -p /var/log/xray
-chmod 755 /var/log/xray
+# Получение последней версии Xray
+get_latest_version() {
+    curl -s --max-time 10 "$GITHUB_API" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p'
+}
 
-# ---------------------------------------------------------
-# 6. Установка Xray
-# ---------------------------------------------------------
-echo "[+] Устанавливаем Xray..."
-LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest \
-    | grep '"tag_name"' | cut -d '"' -f 4)
+# Установка зависимостей
+install_deps() {
+    echo "[+] Устанавливаем зависимости..."
+    if command -v apt >/dev/null 2>&1; then
+        apt update -y && apt install -y curl unzip jq python3 uuid-runtime
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y curl unzip jq python3 util-linux
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y curl unzip jq python3 util-linux
+    elif command -v apk >/dev/null 2>&1; then
+        apk add curl unzip jq python3 util-linux
+    else
+        echo "[!] Неизвестный пакетный менеджер"
+        exit 1
+    fi
+}
 
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64|amd64) MACHINE="64" ;;
-    aarch64) MACHINE="arm64-v8a" ;;
-    armv7l) MACHINE="arm32-v7a" ;;
-    *) MACHINE="64" ;;
-esac
+# Создание каталогов
+create_dirs() {
+    echo "[+] Создаём каталоги..."
+    mkdir -p \
+        "$XRAY_BIN_DIR" \
+        "$XRAY_ETC_DIR" \
+        "$XRAY_SHARE_DIR" \
+        "$XRAY_LOG_DIR" \
+        "$XRAY_STATE_DIR" \
+        "$BACKUP_DIR"
+    chmod 755 "$XRAY_LOG_DIR"
+}
 
-TMP_DIR="/tmp/xray_install"
-mkdir -p "$TMP_DIR"
-ZIP_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${MACHINE}.zip"
-curl -L -o "$TMP_DIR/xray.zip" "$ZIP_URL"
-unzip -q "$TMP_DIR/xray.zip" -d "$TMP_DIR"
-install -m 755 "$TMP_DIR/xray" /usr/local/bin/xray
-echo "✓ Xray установлен"
+# Установка Xray
+install_xray() {
+    local version="$1"
+    local arch="$2"
 
-# ---------------------------------------------------------
-# 7. Установка наших файлов
-# ---------------------------------------------------------
-echo "[+] Устанавливаем update-xray.sh, parser, generator..."
+    echo "[+] Устанавливаем Xray..."
+    echo "  → Версия: $version, архитектура: $arch"
 
-BASE_URL="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/main"
+    local zip_url="${GITHUB_DOWNLOAD}/${version}/Xray-linux-${arch}.zip"
+    local zip_file="${TMP_INSTALL_DIR}/xray.zip"
 
-curl -sL "${BASE_URL}/update-xray.sh" -o /usr/local/bin/update-xray.sh
-chmod +x /usr/local/bin/update-xray.sh
+    mkdir -p "$TMP_INSTALL_DIR"
 
-curl -sL "${BASE_URL}/xray-sub-parser.py" -o /usr/local/bin/xray-sub-parser.py
-chmod +x /usr/local/bin/xray-sub-parser.py
+    curl -L --fail -o "$zip_file" "$zip_url" || {
+        echo "[!] Ошибка скачивания Xray"
+        exit 1
+    }
 
-curl -sL "${BASE_URL}/xray-generate-config.py" -o /usr/local/bin/xray-generate-config.py
-chmod +x /usr/local/bin/xray-generate-config.py
+    unzip -q "$zip_file" -d "$TMP_INSTALL_DIR" || {
+        echo "[!] Ошибка распаковки Xray"
+        exit 1
+    }
 
-echo "✓ Файлы установлены"
+    install -m 755 "${TMP_INSTALL_DIR}/xray" "$XRAY_BIN"
+    rm -rf "$TMP_INSTALL_DIR"
+    echo "  ✓ Xray установлен"
+}
 
-# ---------------------------------------------------------
-# 8. Создание systemd service
-# ---------------------------------------------------------
-echo "[+] Создаём systemd сервис..."
-cat >/etc/systemd/system/xray.service <<EOF
+# Скачивание файла из репозитория
+download_file() {
+    local name="$1"
+    local dest="$2"
+
+    curl -sL --fail "${REPO_BASE}/${name}" -o "$dest" || {
+        echo "[!] Ошибка скачивания $name"
+        exit 1
+    }
+    chmod +x "$dest"
+    echo "  ✓ $name"
+}
+
+# Создание systemd сервиса
+create_systemd_service() {
+    echo "[+] Создаём systemd сервис..."
+    cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Xray Service
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+ExecStart=${XRAY_BIN} run -config ${CONFIG_FILE}
 Restart=on-failure
 LimitNOFILE=100000
 
 [Install]
 WantedBy=multi-user.target
 EOF
+}
 
-systemctl daemon-reload
-systemctl enable xray.service
-echo "✓ systemd сервис создан"
-
-# ---------------------------------------------------------
-# 9. Создание systemd timer
-# ---------------------------------------------------------
-echo "[+] Создаём systemd таймер..."
-cat >/etc/systemd/system/xray-update.service <<EOF
+# Создание systemd таймера
+create_systemd_timer() {
+    echo "[+] Создаём systemd таймер..."
+    cat > "$UPDATE_SERVICE_FILE" <<EOF
 [Unit]
 Description=Update Xray and geodata
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/update-xray.sh
+ExecStart=${UPDATE_SCRIPT}
 EOF
 
-cat >/etc/systemd/system/xray-update.timer <<EOF
+    cat > "$UPDATE_TIMER_FILE" <<EOF
 [Unit]
 Description=Run Xray updater every 3 hours
 
@@ -170,16 +187,121 @@ Unit=xray-update.service
 [Install]
 WantedBy=timers.target
 EOF
+}
 
-systemctl daemon-reload
-systemctl enable xray-update.timer
-systemctl start xray-update.timer
-echo "✓ systemd таймер создан"
+# Включение сервисов
+enable_services() {
+    systemctl daemon-reload
+    systemctl enable xray.service
+    systemctl enable xray-update.timer
+    systemctl start xray-update.timer
+    echo "  ✓ Сервисы созданы"
+}
 
-# ---------------------------------------------------------
-# 10. Первое обновление
-# ---------------------------------------------------------
+# Деинсталляция
+do_uninstall() {
+    echo "===== Xray Uninstaller ====="
+    echo
+    echo "ВНИМАНИЕ: Это действие полностью удалит Xray и все связанные файлы."
+    read -r -p "Продолжить? [y/N]: " CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+        echo "[i] Удаление отменено."
+        exit 0
+    fi
+
+    echo "[+] Удаляем Xray..."
+
+    # Остановка юнитов
+    for unit in xray-update.timer xray.service xray-update.service; do
+        systemctl stop "$unit" 2>/dev/null || true
+        systemctl disable "$unit" 2>/dev/null || true
+    done
+
+    # Удаление файлов юнитов
+    rm -f "$SERVICE_FILE" "$UPDATE_SERVICE_FILE" "$UPDATE_TIMER_FILE"
+    systemctl daemon-reload
+
+    # Удаление бинарников и скриптов
+    rm -f "$XRAY_BIN" "$UPDATE_SCRIPT" "$PARSER_SCRIPT" "$GENERATOR_SCRIPT"
+
+    # Удаление каталогов
+    rm -rf "$XRAY_ETC_DIR" "$XRAY_SHARE_DIR" "$XRAY_LOG_DIR"
+    rm -f /tmp/new_outbounds.json
+    rm -rf "$TMP_INSTALL_DIR"
+
+    echo
+    echo "✓ Xray полностью удалён"
+    echo "Зависимости (jq, python3, curl) не удалены — удалите вручную при необходимости."
+    exit 0
+}
+
+# ============================================================
+# MAIN
+# ============================================================
+
+echo "===== Xray Installer Started ====="
+
+check_root
+
+# Проверка режима удаления
+for arg in "$@"; do
+    case $arg in
+        --uninstall)
+            do_uninstall
+            ;;
+    esac
+done
+
+check_systemd
+
+# Парсинг подписки
+SUB_URL=""
+for arg in "$@"; do
+    case $arg in
+        --sub=*) SUB_URL="${arg#*=}" ;;
+    esac
+done
+
+if [ -z "$SUB_URL" ]; then
+    echo
+    echo "Введите ссылку на подписку:"
+    echo "(оставьте пустым — установка будет отменена)"
+    read -r SUB_URL_INPUT
+    [ -z "$SUB_URL_INPUT" ] && { echo "[!] Подписка не указана."; exit 1; }
+    SUB_URL="$SUB_URL_INPUT"
+fi
+
+# Сохранение подписки
+create_dirs
+echo "$SUB_URL" > "$SUB_FILE"
+chmod 600 "$SUB_FILE"
+echo "[+] Подписка сохранена: $SUB_URL"
+
+# Установка
+install_deps
+create_dirs
+
+LATEST_VERSION=$(get_latest_version)
+[ -z "$LATEST_VERSION" ] && { echo "[!] Не удалось получить версию Xray"; exit 1; }
+
+ARCH=$(detect_arch)
+install_xray "$LATEST_VERSION" "$ARCH"
+
+# Скрипты
+echo "[+] Устанавливаем скрипты..."
+download_file "update-xray.sh" "$UPDATE_SCRIPT"
+download_file "xray-sub-parser.py" "$PARSER_SCRIPT"
+download_file "xray-generate-config.py" "$GENERATOR_SCRIPT"
+
+# systemd
+create_systemd_service
+create_systemd_timer
+enable_services
+
+# Первое обновление
 echo "[+] Выполняем первое обновление..."
-/usr/local/bin/update-xray.sh
+"$UPDATE_SCRIPT"
 
+echo
 echo "===== Xray Installer Finished ====="
+echo "Для удаления выполните: $0 --uninstall"

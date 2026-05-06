@@ -121,7 +121,6 @@ download_xray_if_changed() {
 
     echo "[*] Проверяем Xray ZIP: $dest"
 
-    # Скачиваем .dgst с проверкой
     if ! curl -sL --fail -o "$dgst_file" "$dgst_url"; then
         echo "    [!] Не удалось скачать .dgst, пропускаем обновление Xray"
         return 1
@@ -139,7 +138,7 @@ download_xray_if_changed() {
 
     if [ -f "$sha_file" ] && [ "$(cat "$sha_file")" = "$remote_sha" ]; then
         echo "    ✓ Xray не изменился — пропускаем"
-        return 1  # не обновлён
+        return 1
     fi
 
     echo "    → Xray изменился, скачиваем ZIP..."
@@ -158,7 +157,7 @@ download_xray_if_changed() {
 
     echo "$remote_sha" > "$sha_file"
     echo "    ✓ Xray ZIP обновлён"
-    return 0  # обновлён
+    return 0
 }
 
 # Бэкап конфига
@@ -265,7 +264,7 @@ chmod 644 "$PARSER_OUTPUT"
 backup_config
 
 echo "[+] Генерируем конфиг..."
-CONFIG_TMP=$(mktemp /tmp/config_gen.XXXXXX)
+CONFIG_TMP="${XRAY_ETC_DIR}/.config_new.json"
 
 python3 "$GENERATOR_SCRIPT" > "$CONFIG_TMP" 2>/tmp/config_gen_error.log
 GEN_EXIT=$?
@@ -286,7 +285,6 @@ fi
 
 if ! jq empty "$CONFIG_TMP" >/dev/null 2>&1; then
     echo "[!] Ошибка: невалидный JSON"
-    echo "--- первые строки ---"
     head -5 "$CONFIG_TMP"
     rm -f "$CONFIG_TMP" /tmp/config_gen_error.log
     exit 1
@@ -305,7 +303,6 @@ else
     echo "[!] Ошибка: новый конфиг некорректен"
     echo "--- Диагностика ---"
     echo "Размер конфига: $(wc -c < "$CONFIG_TMP") байт"
-    echo "Первые 3 строки:"
     head -3 "$CONFIG_TMP"
     "$XRAY_BIN" run -test -config "$CONFIG_TMP" 2>&1 || true
     rm -f "$CONFIG_TMP"

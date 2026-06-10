@@ -146,7 +146,16 @@ def main():
         else:
             other_tags.append(tag)
 
+    all_proxy_tags = [ob.get("tag", "") for ob in filtered_obs]
+
     balancers = []
+    # Основной балансер со ВСЕМИ прокси для catch-all трафика
+    balancers.append({
+        "tag": "balancer-all",
+        "selector": all_proxy_tags,
+        "strategy": {"type": "leastPing"}
+    })
+    # Дополнительные балансеры по типам для специфичной маршрутизации
     if xhttp_tags:
         balancers.append({
             "tag": "balancer-xhttp",
@@ -174,17 +183,12 @@ def main():
                                      "geosite:category-ru"], "outboundTag": "direct"}
     ]
 
+    # Стриминг/игры → reality (если есть), иначе попадёт в balancer-all
     if reality_tags:
         rules.append({"type": "field", "domain": ["geosite:category-streaming", "geosite:category-games"], "balancerTag": "balancer-reality"})
-    
-    if xhttp_tags:
-        rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-xhttp"})
-    
-    if reality_tags:
-        rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-reality"})
-    
-    if other_tags:
-        rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-other"})
+
+    # Единое catch-all правило → все прокси
+    rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "balancer-all"})
 
     cfg = base_config()
     cfg["outbounds"] = filtered_obs + [
@@ -193,7 +197,7 @@ def main():
     ]
     
     cfg["observatory"] = {
-        "subjectSelector": ["proxy_"],
+        "subjectSelector": all_proxy_tags,
         "probeURL": "https://www.google.com/generate_204",
         "probeInterval": "120s",
         "enableConcurrency": True

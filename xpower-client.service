@@ -1,6 +1,6 @@
 [Unit]
 Description=XPowerSpirit Xray TProxy Client
-Documentation=https://github.com/kirilllavrov/XPowerSpirit-OpenWRT
+Documentation=https://github.com/kirilllavrov/XPowerSpirit
 After=network-online.target nss-lookup.target
 Wants=network-online.target
 Before=nss-lookup.target

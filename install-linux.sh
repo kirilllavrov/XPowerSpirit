@@ -22,7 +22,7 @@ set -euo pipefail
 # ============================================
 
 SCRIPT_VERSION="1.0.0"
-REPO="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit-OpenWRT/main"
+REPO="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/main"
 
 # Пути установки
 INSTALL_DIR="/opt/xpower"
@@ -584,7 +584,7 @@ create_systemd_service() {
     cat > /etc/systemd/system/xpower-client.service <<'SYSTEMDEOF'
 [Unit]
 Description=XPowerSpirit Xray TProxy Client
-Documentation=https://github.com/kirilllavrov/XPowerSpirit-OpenWRT
+Documentation=https://github.com/kirilllavrov/XPowerSpirit
 After=network-online.target nss-lookup.target
 Wants=network-online.target
 Before=nss-lookup.target

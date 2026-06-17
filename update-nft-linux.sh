@@ -63,9 +63,12 @@ setup_tproxy() {
     ip route add local 0.0.0.0/0 dev lo table 100
 
     # ========================================
-    # OUTPUT chain (hook output) — только маркировка
+    # OUTPUT chain (type route hook output) — маркировка + reroute
+    # type route (не filter!) — ядро делает повторный route lookup после accept,
+    # иначе fwmark 1 не подхватывается policy routing для ухода на lo.
+    # priority mangle (-150) — до conntrack.
     # ========================================
-    nft add chain "$TABLE" output '{ type filter hook output priority 0; }' 2>/dev/null || \
+    nft add chain "$TABLE" output '{ type route hook output priority mangle; }' 2>/dev/null || \
         nft flush chain "$TABLE" output
 
     # Loop prevention: пакеты от Xray (mark 2) — НЕ трогаем
@@ -98,8 +101,9 @@ setup_tproxy() {
 
     # ========================================
     # PREROUTING chain (hook prerouting) — TProxy на lo
+    # priority mangle (-150) — ДО conntrack (-200), иначе TPROXY не сработает.
     # ========================================
-    nft add chain "$TABLE" prerouting '{ type filter hook prerouting priority 0; }' 2>/dev/null || \
+    nft add chain "$TABLE" prerouting '{ type filter hook prerouting priority mangle; }' 2>/dev/null || \
         nft flush chain "$TABLE" prerouting
 
     # Только маркированные пакеты (пришли с lo после policy routing)

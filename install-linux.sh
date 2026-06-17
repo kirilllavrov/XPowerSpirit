@@ -327,9 +327,13 @@ do_install() {
 
     log_info "settings.json сохранён: $SETTINGS_JSON"
 
-    # 5. Установка Xray
+    # 5. Установка Xray + Geo-файлы
     log_step "Установка Xray..."
     install_xray
+
+    # 5b. Скачиваем geoip.dat и geosite.dat (нужны для валидации config.json)
+    log_step "Загрузка geo-файлов..."
+    download_geo
 
     # 6. Генерация config.json (до nftables — нужны IP прокси для bypass)
     log_step "Генерация config.json..."
@@ -345,10 +349,6 @@ do_install() {
         log_step "Настройка DNS..."
         setup_dns
     fi
-
-    # 9. Создание systemd сервиса
-    log_step "Генерация config.json..."
-    generate_config
 
     # 9. Создание systemd сервиса
     log_step "Создание systemd сервиса..."
@@ -407,26 +407,38 @@ do_uninstall() {
         ip route flush table 100 2>/dev/null || true
     fi
 
-    # Восстановление DNS
-    if [ -f "${CONFIG_DIR}/resolv.conf.bak" ]; then
-        run_cmd cp "${CONFIG_DIR}/resolv.conf.bak" /etc/resolv.conf
-        log_info "DNS восстановлен"
+    # Восстановление DNS (systemd-resolved)
+    if [ -f /etc/systemd/resolved.conf.d/xpower.conf ]; then
+        run_cmd rm -f /etc/systemd/resolved.conf.d/xpower.conf
+        if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+            run_cmd systemctl restart systemd-resolved
+        fi
+        log_info "systemd-resolved восстановлен"
     fi
 
+    # Восстановление DNS (resolv.conf)
+    if [ -f "${CONFIG_DIR}/resolv.conf.bak" ]; then
+        chattr -i /etc/resolv.conf 2>/dev/null || true
+        run_cmd cp "${CONFIG_DIR}/resolv.conf.bak" /etc/resolv.conf
+        log_info "/etc/resolv.conf восстановлен"
+    fi
+
+    # Удаление файлов
     run_cmd rm -rf "$INSTALL_DIR"
     run_cmd rm -rf "$STATE_DIR"
     run_cmd rm -rf "$LOG_DIR"
     run_cmd rm -rf "$CACHE_DIR"
+    run_cmd rm -rf "$CONFIG_DIR"
+    run_cmd rm -rf "$USER_CONFIG_DIR"
     run_cmd rm -f "$CLI_TOOL"
     run_cmd rm -f /usr/local/bin/xpower
+    run_cmd rm -f /usr/local/bin/xray
     run_cmd rm -f /etc/systemd/system/xpower-client.service
     run_cmd rm -f /etc/systemd/system/xpower-update.service
     run_cmd rm -f /etc/systemd/system/xpower-update.timer
     run_cmd systemctl daemon-reload
 
-    log_info "Конфигурация сохранена в: $CONFIG_DIR"
-    log_info "Для полного удаления: rm -rf $CONFIG_DIR $USER_CONFIG_DIR"
-    log_info "XPowerSpirit удалён."
+    log_info "XPowerSpirit полностью удалён."
 }
 
 # ============================================
@@ -549,6 +561,41 @@ EOF
 }
 
 # ============================================
+#   ЗАГРУЗКА GEO-ФАЙЛОВ
+# ============================================
+
+download_geo() {
+    local GEOIP_URL GEOSITE_URL
+    GEOIP_URL=$(settings_get ".geo.geoip_url")
+    GEOSITE_URL=$(settings_get ".geo.geosite_url")
+    [ -z "$GEOIP_URL" ] && GEOIP_URL="https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat"
+    [ -z "$GEOSITE_URL" ] && GEOSITE_URL="https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
+
+    for ITEM in "$GEOIP_URL|geoip.dat" "$GEOSITE_URL|geosite.dat"; do
+        URL="${ITEM%%|*}"
+        NAME="${ITEM##*|}"
+        DST="${INSTALL_DIR}/${NAME}"
+
+        if [ -f "$DST" ]; then
+            log_info "$NAME уже загружен"
+            continue
+        fi
+
+        if $DRY_RUN; then
+            log_dry "curl → $DST"
+            continue
+        fi
+
+        log_info "Скачиваю $NAME..."
+        if download_file "$URL" "$DST"; then
+            log_info "$NAME загружен ($(stat -c%s "$DST" 2>/dev/null || echo '?') байт)"
+        else
+            log_warn "Не удалось скачать $NAME — geo-правила не будут работать"
+        fi
+    done
+}
+
+# ============================================
 #   ГЕНЕРАЦИЯ КОНФИГА
 # ============================================
 
@@ -596,7 +643,8 @@ generate_config() {
         die "Ошибка генератора конфига (см. ${LOG_DIR}/generator.log)"
     fi
 
-    # Валидация
+    # Валидация (Xray ищет geo-файлы в XRAY_LOCATION_ASSET или рядом с бинарником)
+    export XRAY_LOCATION_ASSET="$INSTALL_DIR"
     if ! /usr/local/bin/xray run -test -config "$CONFIG_JSON" > "${LOG_DIR}/validate.log" 2>&1; then
         log_error "config.json не прошёл валидацию Xray (см. ${LOG_DIR}/validate.log)"
         rm -f "$SUB_TMP" "$PARSED_TMP"
@@ -788,22 +836,6 @@ cleanup() {
     echo "[+] nftables правила удалены"
 }
 
-cleanup() {
-    # Убираем jump из основной цепочки
-    local handle
-    handle=$(nft -a list chain inet filter OUTPUT 2>/dev/null | grep 'jump xpower_output' | sed 's/.*handle //' | head -1)
-    [ -n "$handle" ] && nft delete rule inet filter OUTPUT handle "$handle" 2>/dev/null || true
-
-    # Чистим таблицу xpower
-    nft delete table inet xpower 2>/dev/null || true
-
-    # Policy routing
-    while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
-    ip route flush table 100 2>/dev/null || true
-
-    echo "[+] nftables правила удалены"
-}
-
 case "${1:-}" in
     --cleanup)
         cleanup
@@ -966,7 +998,7 @@ create_default_settings() {
     ]
   },
   "geo": {
-    "geoip_url": "https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geoip.dat",
+    "geoip_url": "https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat",
     "geosite_url": "https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
   }
 }

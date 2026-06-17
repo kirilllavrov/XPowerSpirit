@@ -46,7 +46,7 @@
     ]
   },
   "geo": {
-    "geoip_url": "https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geoip.dat",
+    "geoip_url": "https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat",
     "geosite_url": "https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
   },
   "tproxy": {

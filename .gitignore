@@ -1,2 +1,17 @@
 __pycache__/
+*.pyc
+
+# Docker (локальная отладка)
+Dockerfile.*
+docker-compose.yml
+docker-entrypoint.sh
+
+# Тестовые данные
+tests/
+
+# Временные файлы
+*.tmp
+*.swp
+*.bak
+*~
 Nothing should be ignored based on the provided file changes. The only modified file is README.md, which is a source/config file and should not be added to .gitignore.

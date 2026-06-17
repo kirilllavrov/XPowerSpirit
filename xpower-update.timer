@@ -1,0 +1,12 @@
+[Unit]
+Description=XPowerSpirit Daily Update Timer
+Requires=xpower-update.service
+
+[Timer]
+# Ежедневно в случайное время (с разбросом 30 мин)
+OnCalendar=daily
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

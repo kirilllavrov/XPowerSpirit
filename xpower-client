@@ -1,0 +1,242 @@
+#!/bin/bash
+# XPowerSpirit CLI — управление Xray TProxy клиентом
+#
+# Использование:
+#   xpower-client status       Показать статус
+#   xpower-client start        Запустить прокси
+#   xpower-client stop         Остановить прокси
+#   xpower-client restart      Перезапустить
+#   xpower-client update       Обновить подписку и конфиг
+#   xpower-client toggle       Вкл/выкл
+#   xpower-client test         Проверить соединение
+#   xpower-client logs         Логи (journalctl)
+#   xpower-client config       Показать конфигурацию
+#   xpower-client proxy-list   Список прокси-серверов
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+CONFIG_DIR="${XPOWER_CONFIG_DIR:-/etc/xpower}"
+CONFIG_JSON="${CONFIG_DIR}/config.json"
+
+usage() {
+    cat <<EOF
+XPowerSpirit Client — управление Xray TProxy
+
+Использование:
+  xpower-client status       Показать статус
+  xpower-client start        Запустить прокси
+  xpower-client stop         Остановить прокси
+  xpower-client restart      Перезапустить
+  xpower-client update       Обновить подписку и конфиг
+  xpower-client toggle       Вкл/выкл прокси
+  xpower-client test         Проверить соединение
+  xpower-client logs         Логи в реальном времени
+  xpower-client config       Показать конфигурацию
+  xpower-client proxy-list   Список прокси-серверов
+  xpower-client setup        Переустановить nftables правила
+EOF
+}
+
+do_status() {
+    echo ""
+    echo -e "${CYAN}=== XPowerSpirit Status ===${NC}"
+    echo ""
+
+    # Сервис
+    echo -n "  Сервис:           "
+    if systemctl is-active --quiet xpower-client 2>/dev/null; then
+        echo -e "${GREEN}● активен${NC}"
+    else
+        echo -e "${RED}○ остановлен${NC}"
+    fi
+
+    # Автообновление
+    echo -n "  Автообновление:   "
+    if systemctl is-active --quiet xpower-update.timer 2>/dev/null; then
+        NEXT=$(systemctl list-timers xpower-update.timer --no-legend 2>/dev/null | awk '{print $3" "$4" "$5" "$6}')
+        echo -e "${GREEN}● включено${NC} (след.: ${NEXT:-N/A})"
+    else
+        echo -e "${YELLOW}○ отключено${NC}"
+    fi
+
+    # Xray
+    echo -n "  Xray Core:        "
+    if /usr/local/bin/xray version >/dev/null 2>&1; then
+        VER=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')
+        echo -e "${GREEN}$VER${NC}"
+    else
+        echo -e "${RED}не установлен${NC}"
+    fi
+
+    # nftables
+    echo -n "  nftables:         "
+    if nft list table inet xpower >/dev/null 2>&1; then
+        RULE_COUNT=$(nft list table inet xpower 2>/dev/null | grep -c '^\s')
+        echo -e "${GREEN}● настроены${NC} (правил: $RULE_COUNT)"
+    else
+        echo -e "${RED}○ не настроены${NC}"
+    fi
+
+    # Policy routing
+    echo -n "  Policy routing:   "
+    if ip rule show 2>/dev/null | grep -q 'fwmark 0x1 lookup 100'; then
+        echo -e "${GREEN}● настроен${NC}"
+    else
+        echo -e "${RED}○ не настроен${NC}"
+    fi
+
+    # Config
+    echo -n "  config.json:      "
+    if [ -f "$CONFIG_JSON" ]; then
+        echo -e "${GREEN}● существует${NC} ($(stat -c%s "$CONFIG_JSON" 2>/dev/null || echo '?') байт)"
+    else
+        echo -e "${RED}○ отсутствует${NC}"
+    fi
+
+    # Прокси
+    echo "  Прокси-серверы:"
+    if [ -f "$CONFIG_JSON" ]; then
+        python3 -c "
+import json
+with open('$CONFIG_JSON') as f:
+    cfg = json.load(f)
+outbounds = [o for o in cfg.get('outbounds', []) if o.get('protocol') == 'vless']
+if outbounds:
+    for o in outbounds:
+        tag = o.get('tag', '?')
+        vnext = o.get('settings', {}).get('vnext', [{}])[0]
+        addr = vnext.get('address', '?')
+        port = vnext.get('port', '?')
+        net = o.get('streamSettings', {}).get('network', '?')
+        sec = o.get('streamSettings', {}).get('security', 'none')
+        print(f'    {tag}: {addr}:{port} ({net}/{sec})')
+else:
+    print('    (нет прокси — DIRECT режим)')
+" 2>/dev/null || echo "    (ошибка чтения конфига)"
+    else
+        echo "    (config.json не найден)"
+    fi
+
+    echo ""
+}
+
+do_test() {
+    echo ""
+    echo -e "${CYAN}=== Проверка соединения ===${NC}"
+    echo ""
+
+    # Базовое интернет-соединение
+    echo -n "  Интернет:         "
+    if curl -fs --max-time 5 https://ifconfig.me/ip -o /dev/null 2>/dev/null; then
+        IP=$(curl -s --max-time 5 https://ifconfig.me/ip)
+        echo -e "${GREEN}● $IP${NC}"
+    else
+        echo -e "${RED}○ нет соединения${NC}"
+    fi
+
+    # DNS через Xray
+    echo -n "  DNS (Xray :5353): "
+    if nslookup google.com 127.0.0.1 -port=5353 >/dev/null 2>&1; then
+        echo -e "${GREEN}● OK${NC}"
+    else
+        echo -e "${YELLOW}○ не отвечает (возможно systemd-resolved)${NC}"
+    fi
+
+    # Google connectivity check (тест прокси)
+    echo -n "  Google:           "
+    STATUS=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://connectivitycheck.gstatic.com/generate_204 2>/dev/null || echo "000")
+    if [ "$STATUS" = "204" ]; then
+        echo -e "${GREEN}● OK (HTTP $STATUS)${NC}"
+    else
+        echo -e "${YELLOW}○ HTTP $STATUS${NC}"
+    fi
+
+    # Проверка что трафик идёт через прокси
+    echo -n "  Маршрутизация:    "
+    if ss -tlnp 2>/dev/null | grep -q ':12345'; then
+        echo -e "${GREEN}● TProxy слушает${NC}"
+    else
+        echo -e "${RED}○ TProxy не слушает${NC}"
+    fi
+
+    echo ""
+}
+
+do_config() {
+    if [ -f "$CONFIG_JSON" ]; then
+        python3 -m json.tool "$CONFIG_JSON" 2>/dev/null | head -100
+        TOTAL=$(wc -l < "$CONFIG_JSON")
+        if [ "$TOTAL" -gt 100 ]; then
+            echo "... (ещё $((TOTAL - 100)) строк)"
+        fi
+    else
+        echo "config.json не найден: $CONFIG_JSON"
+    fi
+}
+
+do_proxy_list() {
+    if [ ! -f "$CONFIG_JSON" ]; then
+        echo "config.json не найден"
+        return 1
+    fi
+    python3 -c "
+import json
+with open('$CONFIG_JSON') as f:
+    cfg = json.load(f)
+outbounds = [o for o in cfg.get('outbounds', []) if o.get('protocol') == 'vless']
+print(f'Прокси-серверов: {len(outbounds)}')
+for o in outbounds:
+    tag = o.get('tag', '?')
+    vnext = o.get('settings', {}).get('vnext', [{}])[0]
+    addr = vnext.get('address', '?')
+    port = vnext.get('port', '?')
+    user = vnext.get('users', [{}])[0]
+    uid = user.get('id', '?')
+    flow = user.get('flow', '')
+    net = o.get('streamSettings', {}).get('network', '?')
+    sec = o.get('streamSettings', {}).get('security', 'none')
+    print(f'  [{tag}]')
+    print(f'    Адрес:     {addr}:{port}')
+    print(f'    Сеть:      {net}')
+    print(f'    TLS:       {sec}')
+    print(f'    UUID:      {uid}')
+    if flow:
+        print(f'    Flow:      {flow}')
+    print()
+" 2>/dev/null
+}
+
+case "${1:-}" in
+    status)     do_status ;;
+    start)      sudo systemctl start xpower-client && echo "XPowerSpirit запущен" ;;
+    stop)       sudo systemctl stop xpower-client && echo "XPowerSpirit остановлен" ;;
+    restart)    sudo systemctl restart xpower-client && echo "XPowerSpirit перезапущен" ;;
+    update)     sudo /opt/xpower/update-xray.sh ;;
+    toggle)
+        if systemctl is-active --quiet xpower-client 2>/dev/null; then
+            sudo systemctl stop xpower-client
+            echo -e "${YELLOW}XPowerSpirit остановлен${NC}"
+        else
+            sudo systemctl start xpower-client
+            echo -e "${GREEN}XPowerSpirit запущен${NC}"
+        fi ;;
+    test)       do_test ;;
+    logs)       sudo journalctl -u xpower-client -f ;;
+    config)     do_config ;;
+    proxy-list) do_proxy_list ;;
+    setup)      sudo /opt/xpower/update-nft.sh ;;
+    -h|--help)  usage ;;
+    *)
+        echo "Неизвестная команда: $1"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac

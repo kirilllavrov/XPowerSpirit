@@ -1,0 +1,59 @@
+{
+  "_comment": "XPowerSpirit Linux Client — настройки по умолчанию",
+  "_paths": {
+    "install_dir": "/opt/xpower",
+    "config_dir": "/etc/xpower",
+    "log_dir": "/var/log/xpower",
+    "cache_dir": "/var/cache/xpower"
+  },
+  "subscription": {
+    "url": "",
+    "user_agent": "XPower/1.0",
+    "remarks_filter": "",
+    "domain_whitelist": []
+  },
+  "hwid": "",
+  "device_model": "",
+  "device_os": "",
+  "ver_os": "",
+  "routing": {
+    "domainStrategy": "IPOnDemand",
+    "doh_domains": [
+      "common.dot.dns.yandex.net",
+      "cloudflare-dns.com",
+      "dns.google",
+      "dns.quad9.net",
+      "doh.opendns.com",
+      "dns.nextdns.io"
+    ],
+    "block_domains": [
+      "geosite:category-ads"
+    ],
+    "direct_ips": [
+      "geoip:ru",
+      "geoip:private"
+    ],
+    "direct_domains": [
+      "geosite:private",
+      "geosite:category-browser",
+      "geosite:category-cdn-ru",
+      "geosite:category-mobile",
+      "geosite:category-ru"
+    ],
+    "proxy_domains": [
+      "geosite:category-streaming",
+      "geosite:category-games"
+    ]
+  },
+  "geo": {
+    "geoip_url": "https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geoip.dat",
+    "geosite_url": "https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
+  },
+  "tproxy": {
+    "port": 12345,
+    "enable_socks": true,
+    "socks_port": 1080,
+    "enable_http": true,
+    "http_port": 8080
+  }
+}

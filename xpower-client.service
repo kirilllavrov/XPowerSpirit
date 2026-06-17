@@ -1,0 +1,49 @@
+[Unit]
+Description=XPowerSpirit Xray TProxy Client
+Documentation=https://github.com/kirilllavrov/XPowerSpirit-OpenWRT
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+Before=nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+Environment=XRAY_LOCATION_ASSET=/opt/xpower
+Environment=XPOWER_CONFIG_DIR=/etc/xpower
+Environment=XPOWER_INSTALL_DIR=/opt/xpower
+
+# Предзапуск: nftables + валидация конфига
+ExecStartPre=/opt/xpower/update-nft.sh
+ExecStartPre=/usr/local/bin/xray run -test -config /etc/xpower/config.json
+
+# Основной процесс
+ExecStart=/usr/local/bin/xray run -config /etc/xpower/config.json
+
+# Пост-остановка: чистим nftables
+ExecStopPost=/opt/xpower/update-nft.sh --cleanup
+
+Restart=on-failure
+RestartSec=10
+
+# Лимиты для Xray (много соединений)
+LimitNOFILE=1048576
+
+# Логирование в journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xpower-client
+
+# Безопасность (systemd sandbox)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/xpower /var/cache/xpower /opt/xpower/geoip.dat /opt/xpower/geosite.dat /etc/xpower/state
+ReadOnlyPaths=/etc/xpower/config.json /etc/xpower/settings.json
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallFilter=@network-io @file-system @process @signal
+
+[Install]
+WantedBy=multi-user.target

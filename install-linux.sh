@@ -723,9 +723,9 @@ setup_tproxy() {
         fi
     done
 
-    # ИСПРАВЛЕННЫЙ TPROXY: правильный синтаксис
-    nft add rule inet xpower tproxy meta l4proto tcp tproxy to :12345 meta mark set 0x1 accept
-    nft add rule inet xpower tproxy meta l4proto udp tproxy to :12345 meta mark set 0x1 accept
+    # TProxy: TCP и UDP → localhost:12345
+    nft add rule inet xpower tproxy meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
+    nft add rule inet xpower tproxy meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
 
     # Policy routing: mark 0x1 → table 100 → lo
     while ip rule del fwmark 1 table 100 2>/dev/null; do :; done

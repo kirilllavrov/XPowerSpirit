@@ -26,6 +26,7 @@ import os
 # ============================================
 
 SETTINGS_FILE = os.environ.get("XPOWER_CONFIG_DIR", "/etc/xpower") + "/settings.json"
+LOG_DIR = os.environ.get("XPOWER_LOG_DIR", "/var/log/xpower")
 
 # Whitelist по умолчанию (переопределяется из settings.json)
 DOMAIN_WHITELIST = []
@@ -120,8 +121,8 @@ def base_config() -> dict:
     return {
         "log": {
             "loglevel": "none",
-            "access": "/tmp/log/xray-access.log",
-            "error": "/tmp/log/xray-error.log"
+            "access": LOG_DIR + "/xray-access.log",
+            "error": LOG_DIR + "/xray-error.log"
         },
         "dns": {
             "tag": "dns-inbuilt",

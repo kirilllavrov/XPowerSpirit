@@ -341,6 +341,16 @@ do_install() {
 
     # 7. Настройка nftables (теперь config.json уже есть)
     log_step "Настройка nftables..."
+    # sysctl для TProxy (route_localnet + ip_forward)
+    if ! $DRY_RUN; then
+        sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null
+        sysctl -w net.ipv4.ip_forward=1 >/dev/null
+        cat > /etc/sysctl.d/99-xpower.conf <<'SYSCTLEOF'
+net.ipv4.conf.all.route_localnet=1
+net.ipv4.ip_forward=1
+SYSCTLEOF
+        sysctl -p /etc/sysctl.d/99-xpower.conf >/dev/null 2>&1
+    fi
     run_cmd "$NFT_UPDATER"
     log_info "nftables настроены"
 
@@ -568,7 +578,7 @@ download_geo() {
     local GEOIP_URL GEOSITE_URL
     GEOIP_URL=$(settings_get ".geo.geoip_url")
     GEOSITE_URL=$(settings_get ".geo.geosite_url")
-    [ -z "$GEOIP_URL" ] && GEOIP_URL="https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat"
+    [ -z "$GEOIP_URL" ] && GEOIP_URL="https://cdn.jsdelivr.net/gh/kirilllavrov/geoip-builder@release/geoip.dat"
     [ -z "$GEOSITE_URL" ] && GEOSITE_URL="https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
 
     for ITEM in "$GEOIP_URL|geoip.dat" "$GEOSITE_URL|geosite.dat"; do
@@ -900,7 +910,7 @@ do_status() {
     fi
 
     echo -n "nftables:   "
-    if nft list table inet xpower >/dev/null 2>&1; then
+    if sudo nft list table inet xpower >/dev/null 2>&1; then
         echo -e "${GREEN}настроены${NC}"
     else
         echo -e "${RED}не настроены${NC}"

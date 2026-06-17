@@ -75,10 +75,10 @@ do_status() {
         echo -e "${RED}не установлен${NC}"
     fi
 
-    # nftables
+    # nftables (требует root)
     echo -n "  nftables:         "
-    if nft list table inet xpower >/dev/null 2>&1; then
-        RULE_COUNT=$(nft list table inet xpower 2>/dev/null | grep -c '^\s')
+    if sudo nft list table inet xpower >/dev/null 2>&1; then
+        RULE_COUNT=$(sudo nft list table inet xpower 2>/dev/null | grep -c '^\s')
         echo -e "${GREEN}● настроены${NC} (правил: $RULE_COUNT)"
     else
         echo -e "${RED}○ не настроены${NC}"

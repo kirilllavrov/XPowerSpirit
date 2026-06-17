@@ -100,6 +100,8 @@ def normalize_outbound(ob: dict) -> dict:
     ob["streamSettings"]["sockopt"]["mark"] = 2
     ob["streamSettings"]["sockopt"]["tcpNoDelay"] = True
     ob["streamSettings"]["sockopt"]["tcpKeepAliveInterval"] = 30
+    ob["streamSettings"]["sockopt"]["tcpFastOpen"] = True
+    ob["streamSettings"]["sockopt"]["tcpCongestion"] = "bbr"
     
     # Отключаем mux (не нужен для TProxy)
     if "mux" not in ob:

@@ -153,18 +153,21 @@ download_file() {
     while [ $retry -le $max_retries ]; do
         if curl -sSL --max-time 30 -o "$dst" "$url"; then
             if [ -s "$dst" ]; then
-                # Проверка на HTML
-                if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
+                # Проверка на HTML / HTTP-ошибки (raw GitHub отдаёт "404: Not Found" текстом)
+                if head -n 1 "$dst" 2>/dev/null | grep -qiE "<html|<!DOCTYPE|^[0-9]{3}:"; then
                     rm -f "$dst"
-                    log_warn "Сервер вернул HTML вместо файла (попытка $retry/$max_retries)"
+                    log_warn "Сервер вернул ошибку вместо файла (попытка $retry/$max_retries): $url"
                 else
                     return 0
                 fi
             fi
+        else
+            log_warn "Не удалось скачать (попытка $retry/$max_retries): $url"
         fi
         [ $retry -lt $max_retries ] && sleep 2
         retry=$((retry + 1))
     done
+    log_error "Исчерпаны попытки скачать: $url"
     return 1
 }
 
@@ -238,22 +241,56 @@ do_install() {
     run_cmd chmod 755 "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" "$CACHE_DIR"
     log_info "Директории созданы"
 
-    # 3. Загружаем скрипты из репозитория
+    # 3. Загружаем скрипты из репозитория (или копируем локальные)
     log_step "Загрузка скриптов..."
-    download_file "${REPO}/xray-generate-config.py" "$GENERATOR" || die "Не удалось скачать генератор"
-    download_file "${REPO}/xray-sub-parser.py" "$PARSER" || die "Не удалось скачать парсер"
-    download_file "${REPO}/update-xray.sh" "$UPDATER" || die "Не удалось скачать update-xray.sh"
+
+    SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+
+    # Пробуем локальные копии сначала
+    if [ -f "$SCRIPT_DIR/xray-generate-config.py" ]; then
+        run_cmd cp "$SCRIPT_DIR/xray-generate-config.py" "$GENERATOR"
+        log_info "xray-generate-config.py (локальная копия)"
+    else
+        download_file "${REPO}/xray-generate-config.py" "$GENERATOR" || die "Не удалось скачать xray-generate-config.py"
+    fi
+
+    if [ -f "$SCRIPT_DIR/xray-sub-parser.py" ]; then
+        run_cmd cp "$SCRIPT_DIR/xray-sub-parser.py" "$PARSER"
+        log_info "xray-sub-parser.py (локальная копия)"
+    else
+        download_file "${REPO}/xray-sub-parser.py" "$PARSER" || die "Не удалось скачать xray-sub-parser.py"
+    fi
+
+    if [ -f "$SCRIPT_DIR/update-xray-linux.sh" ]; then
+        run_cmd cp "$SCRIPT_DIR/update-xray-linux.sh" "$UPDATER"
+        log_info "update-xray.sh (локальная копия)"
+    else
+        download_file "${REPO}/update-xray.sh" "$UPDATER" || die "Не удалось скачать update-xray.sh"
+    fi
+
     run_cmd chmod +x "$GENERATOR" "$PARSER" "$UPDATER"
 
-    # Локальные скрипты (из репозитория, если есть; иначе создаём)
-    if ! download_file "${REPO}/update-nft-linux.sh" "$NFT_UPDATER" 2>/dev/null; then
-        log_warn "update-nft-linux.sh не найден в репозитории — создаём локально"
+    # Проверяем, что критичные файлы на месте и не мусор
+    for f in "$GENERATOR" "$PARSER" "$UPDATER"; do
+        [ -s "$f" ] || die "Критичный файл отсутствует: $f"
+        head -c 4 "$f" | grep -q '^#!/' || die "Файл повреждён (не скрипт): $f"
+    done
+
+    # nft-скрипт: локальная копия, либо из репозитория, либо генерируем
+    if [ -f "$SCRIPT_DIR/update-nft-linux.sh" ]; then
+        run_cmd cp "$SCRIPT_DIR/update-nft-linux.sh" "$NFT_UPDATER"
+        log_info "update-nft.sh (локальная копия)"
+    elif ! download_file "${REPO}/update-nft.sh" "$NFT_UPDATER" 2>/dev/null; then
+        log_warn "update-nft.sh не скачан — создаю локально"
         create_nft_updater
     fi
+    [ -s "$NFT_UPDATER" ] || die "Не удалось создать update-nft.sh"
+    head -c 4 "$NFT_UPDATER" | grep -q '^#!/' || die "update-nft.sh повреждён (не скрипт)"
     run_cmd chmod +x "$NFT_UPDATER"
 
     # CLI-утилита
     create_cli_tool
+    [ -s "$CLI_TOOL" ] || die "Не удалось создать $CLI_TOOL"
 
     log_info "Скрипты загружены"
 
@@ -263,8 +300,10 @@ do_install() {
         if download_file "${REPO}/settings.default.json" "${SETTINGS_JSON}.tmp" 2>/dev/null; then
             run_cmd mv "${SETTINGS_JSON}.tmp" "$SETTINGS_JSON"
         else
+            log_warn "settings.default.json не скачан — создаю с настройками по умолчанию"
             create_default_settings
         fi
+        [ -s "$SETTINGS_JSON" ] || die "Не удалось создать settings.json"
         run_cmd chmod 600 "$SETTINGS_JSON"
     fi
 
@@ -292,18 +331,22 @@ do_install() {
     log_step "Установка Xray..."
     install_xray
 
-    # 6. Настройка nftables
+    # 6. Генерация config.json (до nftables — нужны IP прокси для bypass)
+    log_step "Генерация config.json..."
+    generate_config
+
+    # 7. Настройка nftables (теперь config.json уже есть)
     log_step "Настройка nftables..."
     run_cmd "$NFT_UPDATER"
     log_info "nftables настроены"
 
-    # 7. Настройка DNS
+    # 8. Настройка DNS
     if $SETUP_DNS; then
         log_step "Настройка DNS..."
         setup_dns
     fi
 
-    # 8. Генерация config.json
+    # 9. Создание systemd сервиса
     log_step "Генерация config.json..."
     generate_config
 
@@ -359,16 +402,9 @@ do_uninstall() {
 
     # Очистка nftables
     if ! $DRY_RUN; then
-        nft flush chain inet xpower output 2>/dev/null || true
-        nft delete chain inet xpower output 2>/dev/null || true
-        nft flush chain inet xpower tproxy 2>/dev/null || true
-        nft delete chain inet xpower tproxy 2>/dev/null || true
         nft delete table inet xpower 2>/dev/null || true
-        
-        # Убираем jump-правило из OUTPUT
-        local handle
-        handle=$(nft -a list chain inet filter OUTPUT 2>/dev/null | grep 'jump xpower_output' | sed 's/.*handle //' | head -1)
-        [ -n "$handle" ] && nft delete rule inet filter OUTPUT handle "$handle" 2>/dev/null || true
+        while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
+        ip route flush table 100 2>/dev/null || true
     fi
 
     # Восстановление DNS
@@ -700,47 +736,20 @@ setup_tproxy() {
     # Создаём таблицу xpower
     nft add table inet xpower 2>/dev/null || true
 
-    # Цепочка tproxy (собственно TProxy)
-    nft add chain inet xpower tproxy 2>/dev/null || true
-    nft flush chain inet xpower tproxy
-
-    # Loop protection: пакеты от Xray (mark 2) — не трогаем
-    nft add rule inet xpower tproxy meta mark 2 return
-
-    # Локальные адреса — bypass
-    nft add rule inet xpower tproxy ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return
-
-    # DNS-серверы — bypass (Яндекс, Cloudflare, NextDNS)
-    nft add rule inet xpower tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return
-
-    # DHCP
-    nft add rule inet xpower tproxy udp dport { 67, 68 } return
-
-    # Bypass для IP прокси-серверов (чтобы не зациклить)
-    for ip in $(extract_proxy_ips); do
-        if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-            nft add rule inet xpower tproxy ip daddr "$ip" return
-        fi
-    done
-
-    # TProxy: TCP и UDP → localhost:12345
-    nft add rule inet xpower tproxy meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
-    nft add rule inet xpower tproxy meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
-
-    # Policy routing: mark 0x1 → table 100 → lo
+    # Policy routing (до nftables)
     while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
     ip route flush table 100 2>/dev/null || true
     ip rule add fwmark 1 table 100
     ip route add local 0.0.0.0/0 dev lo table 100
 
-    # Цепочка output
-    nft add chain inet xpower output 2>/dev/null || true
-    nft flush chain inet xpower output
+    # OUTPUT chain (hook output) — маркировка
+    nft add chain inet xpower output '{ type filter hook output priority 0; }' 2>/dev/null || \
+        nft flush chain inet xpower output
 
-    # Loop prevention
+    # Loop protection: mark 2 → не трогаем
     nft add rule inet xpower output meta mark 2 return
 
-    # Локальные адреса
+    # Локальные/частные сети — bypass
     nft add rule inet xpower output ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return
 
     # DNS bypass
@@ -749,25 +758,34 @@ setup_tproxy() {
     # DHCP bypass
     nft add rule inet xpower output udp dport { 67, 68 } return
 
-    # Bypass прокси-серверов
+    # Bypass IP прокси-серверов
     for ip in $(extract_proxy_ips); do
         if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
             nft add rule inet xpower output ip daddr "$ip" return
         fi
     done
 
-    # Маркируем и прыгаем в tproxy
-    nft add rule inet xpower output meta l4proto { tcp, udp } meta mark set 0x1 jump tproxy
+    # Маркируем TCP/UDP → уходит через policy routing на lo
+    nft add rule inet xpower output meta l4proto { tcp, udp } meta mark set 0x1
 
-    # Вставляем jump в основную OUTPUT цепочку (если ещё нет)
-    if ! nft list chain inet filter OUTPUT 2>/dev/null | grep -q 'jump xpower_output'; then
-        # Создаём таблицу/цепочку filter, если нет
-        nft add table inet filter 2>/dev/null || true
-        nft add chain inet filter OUTPUT 2>/dev/null || true
-        nft insert rule inet filter OUTPUT jump xpower_output
-    fi
+    # PREROUTING chain (hook prerouting) — TProxy на lo
+    nft add chain inet xpower prerouting '{ type filter hook prerouting priority 0; }' 2>/dev/null || \
+        nft flush chain inet xpower prerouting
+
+    # Только маркированные пакеты (пришли с lo после policy routing)
+    nft add rule inet xpower prerouting meta mark 0x1 meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
+    nft add rule inet xpower prerouting meta mark 0x1 meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
 
     echo "[+] nftables TProxy правила применены"
+}
+
+cleanup() {
+    nft delete table inet xpower 2>/dev/null || true
+
+    while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
+    ip route flush table 100 2>/dev/null || true
+
+    echo "[+] nftables правила удалены"
 }
 
 cleanup() {

@@ -53,81 +53,37 @@ except Exception as e:
 setup_tproxy() {
     echo -n "Настройка nftables TProxy... "
 
-    # --- Таблица и цепочки ---
+    # --- Таблица ---
     nft add table "$TABLE" 2>/dev/null || true
 
-    # Цепочка tproxy
-    nft add chain "$TABLE" tproxy 2>/dev/null || true
-    nft flush chain "$TABLE" tproxy
+    # --- Policy routing (ДО nftables) ---
+    while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
+    ip route flush table 100 2>/dev/null || true
+    ip rule add fwmark 1 table 100
+    ip route add local 0.0.0.0/0 dev lo table 100
 
     # ========================================
-    # ПРАВИЛА TPROXY
+    # OUTPUT chain (hook output) — только маркировка
     # ========================================
+    nft add chain "$TABLE" output '{ type filter hook output priority 0; }' 2>/dev/null || \
+        nft flush chain "$TABLE" output
 
-    # Loop protection: пакеты от Xray (mark 2) — НЕ трогаем
-    nft add rule "$TABLE" tproxy meta mark 2 return
+    # Loop prevention: пакеты от Xray (mark 2) — НЕ трогаем
+    nft add rule "$TABLE" output meta mark 2 return
 
     # Локальные/частные сети — bypass
-    nft add rule "$TABLE" tproxy ip daddr { \
+    nft add rule "$TABLE" output ip daddr { \
         127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, \
         192.168.0.0/16, 169.254.0.0/16 \
     } return
 
-    # DNS-серверы (Яндекс, Cloudflare, NextDNS) — bypass
-    nft add rule "$TABLE" tproxy ip daddr { \
+    # DNS-серверы — bypass
+    nft add rule "$TABLE" output ip daddr { \
         77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, \
         45.90.28.0, 45.90.30.0 \
     } return
 
     # DHCP — не трогаем
-    nft add rule "$TABLE" tproxy udp dport { 67, 68 } return
-
-    # Bypass для IP прокси-серверов (предотвращение петель)
-    for ip in $(extract_proxy_ips); do
-        if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-            nft add rule "$TABLE" tproxy ip daddr "$ip" return
-        fi
-    done
-
-    # TProxy: TCP и UDP → localhost:TPROXY_PORT
-    nft add rule "$TABLE" tproxy meta l4proto tcp tproxy ip to "127.0.0.1:${TPROXY_PORT}" meta mark set 0x1 accept
-    nft add rule "$TABLE" tproxy meta l4proto udp tproxy ip to "127.0.0.1:${TPROXY_PORT}" meta mark set 0x1 accept
-
-    # ========================================
-    # POLICY ROUTING
-    # ========================================
-
-    # Очищаем старые правила
-    while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
-    ip route flush table 100 2>/dev/null || true
-
-    # Создаём: mark 1 → table 100 → lo
-    ip rule add fwmark 1 table 100
-    ip route add local 0.0.0.0/0 dev lo table 100
-
-    # ========================================
-    # ЦЕПОЧКА OUTPUT
-    # ========================================
-
-    nft add chain "$TABLE" output 2>/dev/null || true
-    nft flush chain "$TABLE" output
-
-    # Loop prevention
-    nft add rule "$TABLE" output meta mark 2 return
-
-    # Локальные адреса
-    nft add rule "$TABLE" output ip daddr { \
-        127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, \
-        192.168.0.0/16, 169.254.0.0/16 \
-    } return
-
-    # DNS bypass
-    nft add rule "$TABLE" output ip daddr { \
-        77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, \
-        45.90.28.0, 45.90.30.0 \
-    } return
-
-    # DHCP bypass
     nft add rule "$TABLE" output udp dport { 67, 68 } return
 
     # Bypass IP прокси-серверов
@@ -137,22 +93,19 @@ setup_tproxy() {
         fi
     done
 
-    # Маркируем и направляем в tproxy
-    nft add rule "$TABLE" output meta l4proto { tcp, udp } meta mark set 0x1 jump tproxy
+    # Маркируем TCP/UDP → пакет уходит через policy routing на lo
+    nft add rule "$TABLE" output meta l4proto { tcp, udp } meta mark set 0x1
 
     # ========================================
-    # ПОДКЛЮЧЕНИЕ К ОСНОВНОЙ ЦЕПОЧКЕ
+    # PREROUTING chain (hook prerouting) — TProxy на lo
     # ========================================
+    nft add chain "$TABLE" prerouting '{ type filter hook prerouting priority 0; }' 2>/dev/null || \
+        nft flush chain "$TABLE" prerouting
 
-    # Создаём таблицу/цепочку filter:OUTPUT если их нет
-    nft add table inet filter 2>/dev/null || true
-    nft add chain inet filter OUTPUT 2>/dev/null || true
-
-    # Вставляем jump в начало OUTPUT, если ещё не добавлен
-    if ! nft list chain inet filter OUTPUT 2>/dev/null | grep -q 'jump xpower_output'; then
-        nft insert rule inet filter OUTPUT jump xpower_output
-        echo "вставлен jump в filter:OUTPUT"
-    fi
+    # Только маркированные пакеты (пришли с lo после policy routing)
+    # TProxy: TCP и UDP → localhost:TPROXY_PORT
+    nft add rule "$TABLE" prerouting meta mark 0x1 meta l4proto tcp tproxy ip to "127.0.0.1:${TPROXY_PORT}" meta mark set 0x1 accept
+    nft add rule "$TABLE" prerouting meta mark 0x1 meta l4proto udp tproxy ip to "127.0.0.1:${TPROXY_PORT}" meta mark set 0x1 accept
 
     echo -e "${GREEN}OK${NC}"
     echo "  ✓ TProxy порт: ${TPROXY_PORT}"
@@ -175,13 +128,7 @@ setup_tproxy() {
 cleanup() {
     echo -n "Удаление nftables правил... "
 
-    # Убираем jump из filter:OUTPUT
-    local handle
-    handle=$(nft -a list chain inet filter OUTPUT 2>/dev/null | \
-        grep 'jump xpower_output' | sed 's/.*handle //' | head -1)
-    [ -n "$handle" ] && nft delete rule inet filter OUTPUT handle "$handle" 2>/dev/null
-
-    # Удаляем таблицу xpower
+    # Удаляем таблицу xpower целиком
     nft delete table "$TABLE" 2>/dev/null || true
 
     # Policy routing

@@ -43,6 +43,8 @@ GEO_DIR="${INSTALL_DIR}"
 GEOIP="${GEO_DIR}/geoip.dat"
 GEOSITE="${GEO_DIR}/geosite.dat"
 
+export XRAY_LOCATION_ASSET="$GEO_DIR"
+
 LOG="${LOG_DIR}/update.log"
 
 # ============================================

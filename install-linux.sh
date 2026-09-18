@@ -702,7 +702,7 @@ download_geo() {
     local GEOIP_URL GEOSITE_URL
     GEOIP_URL=$(settings_get ".geo.geoip_url")
     GEOSITE_URL=$(settings_get ".geo.geosite_url")
-    [ -z "$GEOIP_URL" ] && GEOIP_URL="https://cdn.jsdelivr.net/gh/kirilllavrov/geoip-builder@release/geoip.dat"
+    [ -z "$GEOIP_URL" ] && GEOIP_URL="https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat"
     [ -z "$GEOSITE_URL" ] && GEOSITE_URL="https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
 
     for ITEM in "$GEOIP_URL|geoip.dat" "$GEOSITE_URL|geosite.dat"; do

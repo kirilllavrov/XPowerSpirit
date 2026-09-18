@@ -96,6 +96,13 @@ fetch_url() {
     local max_retries=2
     local retry=1
 
+    # Пустой или некорректный URL — сразу отказ, иначе curl пытается
+    # резолвить ".sha256sum" и сыпет непонятными ошибками
+    case "$url" in
+        http://*|https://*) ;;
+        *) return 1 ;;
+    esac
+
     local _ua _ver _model _os
     _ua=$(settings_get ".subscription.user_agent" 2>/dev/null || echo "XPower/1.1")
     _ver=$(settings_get ".ver_os" 2>/dev/null || echo "")
@@ -132,13 +139,17 @@ extract_sha256() {
 rotate_log() {
     local log_file="$1"
     local max_size="${2:-524288}"  # 512KB
-    [ -f "$log_file" ] || return
+    # `|| return 0` обязательно: файла может ещё не быть (loglevel none вообще
+    # не создаёт access/error-логи), а `return` без кода вернул бы 1 и с set -e
+    # апдейтер падал бы сразу после старта, не делая ничего.
+    [ -f "$log_file" ] || return 0
     local size
     size=$(stat -c%s "$log_file" 2>/dev/null || wc -c <"$log_file")
     if [ "$size" -gt "$max_size" ]; then
         : >"$log_file"
         echo "[*] Лог очищен: $log_file" >>"$LOG"
     fi
+    return 0
 }
 
 # ============================================
@@ -169,9 +180,11 @@ SUB_USER_AGENT=$(settings_get ".subscription.user_agent")
 # Фильтр remarks
 REMARKS_FILTER=$(settings_get ".subscription.remarks_filter")
 
-# Geo URL
+# Geo URL (пустые значения → дефолты, как в install-linux.sh)
 GEOIP_URL=$(settings_get ".geo.geoip_url")
 GEOSITE_URL=$(settings_get ".geo.geosite_url")
+[ -z "$GEOIP_URL" ] && GEOIP_URL="https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat"
+[ -z "$GEOSITE_URL" ] && GEOSITE_URL="https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
 
 echo "→ UA: $SUB_USER_AGENT, HWID: $HWID" >>"$LOG"
 [ -n "$REMARKS_FILTER" ] && echo "→ Фильтр remarks: $REMARKS_FILTER" >>"$LOG"

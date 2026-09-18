@@ -8,14 +8,17 @@
   },
   "subscription": {
     "url": "",
-    "user_agent": "XPower/1.0",
-    "remarks_filter": "",
-    "domain_whitelist": []
+    "user_agent": "XPower/1.1",
+    "remarks_filter": ""
   },
   "hwid": "",
   "device_model": "",
   "device_os": "",
   "ver_os": "",
+  "dns": {
+    "mode": "",
+    "local_port": 5353
+  },
   "routing": {
     "domainStrategy": "IPOnDemand",
     "doh_domains": [

@@ -1,7 +1,7 @@
 [Unit]
 Description=XPowerSpirit Xray TProxy Client
 Documentation=https://github.com/kirilllavrov/XPowerSpirit
-After=network-online.target nss-lookup.target
+After=network-online.target
 Wants=network-online.target
 Before=nss-lookup.target
 
@@ -13,14 +13,14 @@ Environment=XPOWER_CONFIG_DIR=/etc/xpower
 Environment=XPOWER_INSTALL_DIR=/opt/xpower
 
 # Предзапуск: nftables + валидация конфига
-ExecStartPre=/opt/xpower/update-nft.sh
+ExecStartPre=/opt/xpower/update-nft-linux.sh
 ExecStartPre=/usr/local/bin/xray run -test -config /etc/xpower/config.json
 
 # Основной процесс
 ExecStart=/usr/local/bin/xray run -config /etc/xpower/config.json
 
 # Пост-остановка: чистим nftables
-ExecStopPost=/opt/xpower/update-nft.sh --cleanup
+ExecStopPost=/opt/xpower/update-nft-linux.sh --cleanup
 
 Restart=on-failure
 RestartSec=10
@@ -43,7 +43,9 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictRealtime=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=no
-SystemCallFilter=@network-io @file-system @process @signal
+# @system-service — базовый безопасный whitelist (было: @network-io @file-system
+# @process @signal, что скорее всего не хватало Go-рантайму для старта)
+SystemCallFilter=@system-service
 
 [Install]
 WantedBy=multi-user.target

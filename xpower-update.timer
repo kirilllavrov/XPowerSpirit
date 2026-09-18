@@ -1,8 +1,10 @@
 [Unit]
 Description=XPowerSpirit Daily Update Timer
-Requires=xpower-update.service
 
 [Timer]
+# Явный Unit= вместо Requires=: иначе `systemctl start` таймера сразу же
+# запускал бы сервис обновления (обновление прямо во время установки)
+Unit=xpower-update.service
 # Ежедневно в случайное время (с разбросом 30 мин)
 OnCalendar=daily
 RandomizedDelaySec=1800

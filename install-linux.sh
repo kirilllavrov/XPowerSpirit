@@ -21,7 +21,7 @@ set -euo pipefail
 #   КОНФИГУРАЦИЯ
 # ============================================
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
 REPO="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit/main"
 
 # Пути установки
@@ -37,13 +37,13 @@ SETTINGS_JSON="${CONFIG_DIR}/settings.json"
 CONFIG_JSON="${CONFIG_DIR}/config.json"
 GENERATOR="${INSTALL_DIR}/xray-generate-config.py"
 PARSER="${INSTALL_DIR}/xray-sub-parser.py"
-UPDATER="${INSTALL_DIR}/update-xray.sh"
-NFT_UPDATER="${INSTALL_DIR}/update-nft.sh"
+UPDATER="${INSTALL_DIR}/update-xray-linux.sh"
+NFT_UPDATER="${INSTALL_DIR}/update-nft-linux.sh"
 CLI_TOOL="/usr/local/bin/xpower-client"
 
 # Переменные (из CLI или дефолты)
 SUB_URL=""
-SUB_USER_AGENT="XPower/1.0"
+SUB_USER_AGENT="XPower/1.1"
 REMARKS_FILTER=""
 SETUP_DNS=true
 DRY_RUN=false
@@ -263,9 +263,9 @@ do_install() {
 
     if [ -f "$SCRIPT_DIR/update-xray-linux.sh" ]; then
         run_cmd cp "$SCRIPT_DIR/update-xray-linux.sh" "$UPDATER"
-        log_info "update-xray.sh (локальная копия)"
+        log_info "update-xray-linux.sh (локальная копия)"
     else
-        download_file "${REPO}/update-xray.sh" "$UPDATER" || die "Не удалось скачать update-xray.sh"
+        download_file "${REPO}/update-xray-linux.sh" "$UPDATER" || die "Не удалось скачать update-xray-linux.sh"
     fi
 
     run_cmd chmod +x "$GENERATOR" "$PARSER" "$UPDATER"
@@ -279,13 +279,13 @@ do_install() {
     # nft-скрипт: локальная копия, либо из репозитория, либо генерируем
     if [ -f "$SCRIPT_DIR/update-nft-linux.sh" ]; then
         run_cmd cp "$SCRIPT_DIR/update-nft-linux.sh" "$NFT_UPDATER"
-        log_info "update-nft.sh (локальная копия)"
-    elif ! download_file "${REPO}/update-nft.sh" "$NFT_UPDATER" 2>/dev/null; then
-        log_warn "update-nft.sh не скачан — создаю локально"
+        log_info "update-nft-linux.sh (локальная копия)"
+    elif ! download_file "${REPO}/update-nft-linux.sh" "$NFT_UPDATER" 2>/dev/null; then
+        log_warn "update-nft-linux.sh не скачан — создаю локально"
         create_nft_updater
     fi
-    [ -s "$NFT_UPDATER" ] || die "Не удалось создать update-nft.sh"
-    head -c 4 "$NFT_UPDATER" | grep -q '^#!/' || die "update-nft.sh повреждён (не скрипт)"
+    [ -s "$NFT_UPDATER" ] || die "Не удалось создать update-nft-linux.sh"
+    head -c 4 "$NFT_UPDATER" | grep -q '^#!/' || die "update-nft-linux.sh повреждён (не скрипт)"
     run_cmd chmod +x "$NFT_UPDATER"
 
     # CLI-утилита
@@ -303,7 +303,7 @@ do_install() {
             log_warn "settings.default.json не скачан — создаю с настройками по умолчанию"
             create_default_settings
         fi
-        [ -s "$SETTINGS_JSON" ] || die "Не удалось создать settings.json"
+        [ -s "$SETTINGS_JSON" ] || die "Не удалось создать settings.default.json"
         run_cmd chmod 600 "$SETTINGS_JSON"
     fi
 
@@ -687,10 +687,10 @@ Before=nss-lookup.target
 Type=simple
 User=root
 Environment=XRAY_LOCATION_ASSET=/opt/xpower
-ExecStartPre=/opt/xpower/update-nft.sh
+ExecStartPre=/opt/xpower/update-nft-linux.sh
 ExecStartPre=/usr/local/bin/xray run -test -config /etc/xpower/config.json
 ExecStart=/usr/local/bin/xray run -config /etc/xpower/config.json
-ExecStopPost=/opt/xpower/update-nft.sh --cleanup
+ExecStopPost=/opt/xpower/update-nft-linux.sh --cleanup
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=1048576
@@ -727,7 +727,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=root
-ExecStart=/opt/xpower/update-xray.sh
+ExecStart=/opt/xpower/update-xray-linux.sh
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=xpower-update
@@ -947,7 +947,7 @@ case "${1:-}" in
     start)     systemctl start xpower-client && echo "XPowerSpirit запущен" ;;
     stop)      systemctl stop xpower-client && echo "XPowerSpirit остановлен" ;;
     restart)   systemctl restart xpower-client && echo "XPowerSpirit перезапущен" ;;
-    update)    /opt/xpower/update-xray.sh ;;
+    update)    /opt/xpower/update-xray-linux.sh ;;
     toggle)
         if systemctl is-active --quiet xpower-client; then
             systemctl stop xpower-client

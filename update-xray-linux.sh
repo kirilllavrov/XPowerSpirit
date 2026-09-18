@@ -61,9 +61,11 @@ die() {
 }
 
 # jq-хелперы
+# ВАЖНО: функция никогда не возвращает ошибку — иначе при `set -e` вызов
+# $(settings_get ...) обрывал бы весь скрипт (например, при битом settings.json)
 settings_get() {
     local key="$1"
-    [ -f "$SETTINGS_JSON" ] || return 1
+    [ -f "$SETTINGS_JSON" ] || return 0
     jq -r "
         if $key | type == \"boolean\" then
             if $key then \"1\" else \"0\" end
@@ -72,7 +74,7 @@ settings_get() {
         else
             $key // empty
         end
-    " "$SETTINGS_JSON" 2>/dev/null
+    " "$SETTINGS_JSON" 2>/dev/null || true
 }
 
 settings_set() {
@@ -121,9 +123,9 @@ fetch_url() {
     return 1
 }
 
-# SHA256 из .dgst
+# SHA256 из .dgst (никогда не падает: при set -o pipefail grep/sed могут вернуть ошибку)
 extract_sha256() {
-    grep '^SHA2-256' "$1" 2>/dev/null | sed 's/.*= *//' | tr -cd '0-9a-fA-F' | cut -c1-64
+    grep '^SHA2-256' "$1" 2>/dev/null | sed 's/.*= *//' | tr -cd '0-9a-fA-F' | cut -c1-64 || true
 }
 
 # Ротация логов (очистка при превышении размера)
@@ -186,15 +188,16 @@ rotate_log "$LOG" 262144
 echo "→ Проверка обновлений Xray Core..." >>"$LOG"
 
 for i in $(seq 1 5); do
-    if curl -s --max-time 3 https://api.github.com >/dev/null 2>&1; then
+    if curl -s --max-time 10 https://api.github.com >/dev/null 2>&1; then
         break
     fi
     [ "$i" = "5" ] && echo "[!] GitHub API недоступен — пропускаем обновление Xray" >>"$LOG"
     sleep 2
 done
 
-LATEST_VERSION=$(curl -s --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
-    jq -r '.tag_name // empty' 2>/dev/null)
+# `|| true` обязательно: при set -o pipefail сбой curl обрывал бы весь скрипт
+LATEST_VERSION=$(curl -s --max-time 15 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
+    jq -r '.tag_name // empty' 2>/dev/null || true)
 
 if [ -z "$LATEST_VERSION" ]; then
     echo "[!] Не удалось получить версию Xray — пропускаем" >>"$LOG"
@@ -224,15 +227,23 @@ else
                 else
                     echo "→ Скачиваем Xray ${LATEST_VERSION}..." >>"$LOG"
                     if fetch_url "$ZIP_URL" "$ZIP_DEST"; then
-                        LOCAL_SHA=$(sha256sum "$ZIP_DEST" | awk '{print $1}')
+                        LOCAL_SHA=$(sha256sum "$ZIP_DEST" | awk '{print $1}' || true)
                         if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
                             echo "$REMOTE_SHA" >"$SHA_FILE"
                             unzip -qo "$ZIP_DEST" -d "$TMP_DIR"
                             if [ -f "$TMP_DIR/xray" ]; then
                                 systemctl stop xpower-client 2>/dev/null || true
-                                cp "$TMP_DIR/xray" /usr/local/bin/xray
-                                chmod 755 /usr/local/bin/xray
-                                echo "[+] Xray обновлён до ${LATEST_VERSION}" >>"$LOG"
+                                # ВАЖНО: `cp` поверх работающего бинарника падает с
+                                # "Text file busy". Поэтому кладём рядом и делаем
+                                # атомарный mv (переименование работает всегда).
+                                if cp "$TMP_DIR/xray" /usr/local/bin/xray.new 2>>"$LOG" && \
+                                   chmod 755 /usr/local/bin/xray.new && \
+                                   mv -f /usr/local/bin/xray.new /usr/local/bin/xray; then
+                                    echo "[+] Xray обновлён до ${LATEST_VERSION}" >>"$LOG"
+                                else
+                                    rm -f /usr/local/bin/xray.new
+                                    echo "[!] Не удалось заменить бинарник Xray — продолжаем" >>"$LOG"
+                                fi
                             else
                                 echo "[!] Не удалось распаковать Xray" >>"$LOG"
                             fi
@@ -272,7 +283,7 @@ update_geo() {
         return 1
     fi
 
-    REMOTE_SHA=$(cut -d' ' -f1 "$TMP_SHA" 2>/dev/null)
+    REMOTE_SHA=$(cut -d' ' -f1 "$TMP_SHA" 2>/dev/null || true)
     if [ -z "$REMOTE_SHA" ]; then
         echo "[!] Пустой sha256sum для $BASE — пропускаем" >>"$LOG"
         return 1
@@ -288,7 +299,7 @@ update_geo() {
         return 1
     fi
 
-    LOCAL_SHA=$(sha256sum "$TMP_DEST" | awk '{print $1}')
+    LOCAL_SHA=$(sha256sum "$TMP_DEST" | awk '{print $1}' || true)
     if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
         echo "[X] SHA не совпадает для $BASE" >>"$LOG"
         rm -f "$TMP_DEST"

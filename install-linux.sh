@@ -88,6 +88,22 @@ run_cmd() {
     "$@"
 }
 
+# Удаление пути с игнорированием ошибок.
+# Busy mount point (§/opt/xpower в контейнере), immutable-файл или отсутствие
+# прав не должны обрывать uninstall — иначе система останется наполовину
+# удалённой (сервисы включены, файлы на месте).
+remove_path() {
+    local path="$1"
+    local flag="${2:--rf}"
+
+    if $DRY_RUN; then
+        log_dry "rm $flag $path"
+        return 0
+    fi
+    [ -e "$path" ] || return 0
+    rm "$flag" "$path" 2>/dev/null || log_warn "Не удалось удалить: $path"
+}
+
 detect_os() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -198,9 +214,11 @@ install_file() {
 }
 
 # jq-хелперы для settings.json
+# ВАЖНО: функция никогда не возвращает ошибку — иначе при `set -e` вызов
+# $(settings_get ...) обрывал бы весь скрипт
 settings_get() {
     local key="$1"
-    [ -f "$SETTINGS_JSON" ] || return 1
+    [ -f "$SETTINGS_JSON" ] || return 0
     jq -r "
         if $key | type == \"boolean\" then
             if $key then \"1\" else \"0\" end
@@ -209,7 +227,7 @@ settings_get() {
         else
             $key // empty
         end
-    " "$SETTINGS_JSON" 2>/dev/null
+    " "$SETTINGS_JSON" 2>/dev/null || true
 }
 
 settings_set() {
@@ -294,6 +312,20 @@ do_install() {
     if [ ! -f "$SETTINGS_JSON" ]; then
         install_file "settings.default.json" "$SETTINGS_JSON" 600
         [ -s "$SETTINGS_JSON" ] || die "Не удалось установить settings.json"
+    elif ! $DRY_RUN; then
+        # Переустановка/апгрейд: дополняем существующий файл недостающими
+        # ключами из дефолтов, не перезатирая значения пользователя
+        # (в 1.0.1 появились секции dns/tproxy)
+        install_file "settings.default.json" "${SETTINGS_JSON}.defaults" 600
+        if jq -s '.[0] * .[1]' "${SETTINGS_JSON}.defaults" "$SETTINGS_JSON" > "${SETTINGS_JSON}.tmp" 2>/dev/null; then
+            mv "${SETTINGS_JSON}.tmp" "$SETTINGS_JSON"
+            chmod 600 "$SETTINGS_JSON"
+            log_info "settings.json дополнен новыми ключами из дефолтов"
+        else
+            rm -f "${SETTINGS_JSON}.tmp"
+            log_warn "Не удалось обновить структуру settings.json — оставляю как есть"
+        fi
+        rm -f "${SETTINGS_JSON}.defaults"
     fi
 
     # Сохраняем параметры
@@ -366,13 +398,15 @@ SYSCTLEOF
     run_cmd systemctl enable xpower-client
     run_cmd systemctl start xpower-client
 
-    # Проверка
-    sleep 2
-    if systemctl is-active --quiet xpower-client; then
-        log_info "XPowerSpirit запущен и работает!"
-    else
-        log_warn "Сервис не запустился. Проверьте: systemctl status xpower-client"
-        log_warn "Логи: journalctl -u xpower-client -f"
+    # Проверка — только при реальной установке (в dry-run ничего не запускалось)
+    if ! $DRY_RUN; then
+        sleep 2
+        if systemctl is-active --quiet xpower-client; then
+            log_info "XPowerSpirit запущен и работает!"
+        else
+            log_warn "Сервис не запустился. Проверьте: systemctl status xpower-client"
+            log_warn "Логи: journalctl -u xpower-client -f"
+        fi
     fi
 
     # 11. Создаём systemd timer для автообновления
@@ -438,19 +472,16 @@ do_uninstall() {
         log_info "dnsmasq восстановлен"
     fi
 
-    # Удаление файлов
-    run_cmd rm -rf "$INSTALL_DIR"
-    run_cmd rm -rf "$STATE_DIR"
-    run_cmd rm -rf "$LOG_DIR"
-    run_cmd rm -rf "$CACHE_DIR"
-    run_cmd rm -rf "$CONFIG_DIR"
-    run_cmd rm -rf "$USER_CONFIG_DIR"
-    run_cmd rm -f "$CLI_TOOL"
-    run_cmd rm -f /usr/local/bin/xpower
-    run_cmd rm -f /usr/local/bin/xray
-    run_cmd rm -f /etc/systemd/system/xpower-client.service
-    run_cmd rm -f /etc/systemd/system/xpower-update.service
-    run_cmd rm -f /etc/systemd/system/xpower-update.timer
+    # Удаление файлов (best-effort: ошибка одного rm не должна прерывать остальное)
+    for path in "$INSTALL_DIR" "$STATE_DIR" "$LOG_DIR" "$CACHE_DIR" "$CONFIG_DIR" "$USER_CONFIG_DIR"; do
+        remove_path "$path" -rf
+    done
+    for path in "$CLI_TOOL" /usr/local/bin/xpower /usr/local/bin/xray \
+                /etc/systemd/system/xpower-client.service \
+                /etc/systemd/system/xpower-update.service \
+                /etc/systemd/system/xpower-update.timer; do
+        remove_path "$path" -f
+    done
     run_cmd systemctl daemon-reload
 
     log_info "XPowerSpirit полностью удалён."
@@ -468,9 +499,10 @@ install_xray() {
         CURRENT_VER=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
         log_info "Xray уже установлен (версия: $CURRENT_VER)"
         # < /dev/tty — иначе при установке через `curl | bash` read() съел бы
-        # сам скрипт из stdin
+        # сам скрипт из stdin. Группа + 2>/dev/null глушат и сообщение bash
+        # о недоступном /dev/tty.
         ANSWER="y"
-        if ! read -r -p "  Обновить до последней версии? [Y/n] " ANSWER < /dev/tty 2>/dev/null; then
+        if ! { read -r -p "  Обновить до последней версии? [Y/n] " ANSWER < /dev/tty; } 2>/dev/null; then
             log_info "Нет доступа к терминалу — обновляю Xray без вопросов"
             ANSWER="y"
         fi
@@ -488,8 +520,9 @@ install_xray() {
         sleep 2
     done
 
-    LATEST_VERSION=$(curl -s --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
-        jq -r '.tag_name // empty' 2>/dev/null)
+    # `|| true` обязательно: при set -o pipefail сбой curl обрывал бы установку
+    LATEST_VERSION=$(curl -s --max-time 15 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
+        jq -r '.tag_name // empty' 2>/dev/null || true)
     [ -z "$LATEST_VERSION" ] && die "Не удалось получить версию Xray"
 
     ARCH=$(uname -m)
@@ -524,7 +557,7 @@ install_xray() {
 
     # Проверка SHA (если есть .dgst)
     if [ -f "$TMP_DIR/xray.dgst" ]; then
-        REMOTE_SHA=$(grep '^SHA2-256' "$TMP_DIR/xray.dgst" | sed 's/.*= *//' | tr -cd '0-9a-fA-F' | cut -c1-64)
+        REMOTE_SHA=$(grep '^SHA2-256' "$TMP_DIR/xray.dgst" | sed 's/.*= *//' | tr -cd '0-9a-fA-F' | cut -c1-64 || true)
         LOCAL_SHA=$(sha256sum "$TMP_DIR/xray.zip" | awk '{print $1}')
         if [ -n "$REMOTE_SHA" ] && [ "$REMOTE_SHA" != "$LOCAL_SHA" ]; then
             die "SHA не совпадает для Xray!"
@@ -534,8 +567,10 @@ install_xray() {
 
     # Распаковка и установка
     unzip -qo "$TMP_DIR/xray.zip" -d "$TMP_DIR"
-    run_cmd cp "$TMP_DIR/xray" /usr/local/bin/xray
-    run_cmd chmod 755 /usr/local/bin/xray
+    # Атомарная подмена: `cp` поверх работающего бинарника даёт "Text file busy"
+    run_cmd cp "$TMP_DIR/xray" /usr/local/bin/xray.new
+    run_cmd chmod 755 /usr/local/bin/xray.new
+    run_cmd mv -f /usr/local/bin/xray.new /usr/local/bin/xray
 
     log_info "Xray ${LATEST_VERSION} установлен"
 }
@@ -759,13 +794,11 @@ generate_config() {
 # ============================================
 
 create_systemd_service() {
-    log_step "Установка systemd сервиса..."
     install_file "xpower-client.service" "/etc/systemd/system/xpower-client.service" 644
     log_info "systemd сервис установлен"
 }
 
 create_systemd_timer() {
-    log_step "Установка systemd timer автообновления..."
     install_file "xpower-update.service" "/etc/systemd/system/xpower-update.service" 644
     install_file "xpower-update.timer"   "/etc/systemd/system/xpower-update.timer"   644
 

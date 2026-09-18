@@ -41,7 +41,7 @@ try:
         print(12345)
 except Exception:
     print(12345)
-" 2>/dev/null)
+" 2>/dev/null || true)
     [ -n "$port" ] || port=12345
     echo "$port"
 }
@@ -85,63 +85,63 @@ setup_tproxy() {
 
     echo -n "Настройка nftables TProxy... "
 
-    # --- Таблица ---
-    nft add table "$TABLE" 2>/dev/null || true
-
-    # --- Policy routing (ДО nftables) ---
+    # --- Policy routing (идемпотентно: сначала снимаем старые правила) ---
     while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
     ip route flush table 100 2>/dev/null || true
     ip rule add fwmark 1 table 100
     ip route add local 0.0.0.0/0 dev lo table 100
 
     # ========================================
-    # OUTPUT chain (type route hook output) — маркировка + reroute
-    # type route (не filter!) — ядро делает повторный route lookup после accept,
-    # иначе fwmark 1 не подхватывается policy routing для ухода на lo.
+    # Правила применяются ОДНИМ батчем (одна транзакция ядра):
+    #   - окна без правил нет;
+    #   - `add chain` идемпотентен (на существующей цепочке возвращает 0),
+    #     поэтому перед добавлением правил обязательно `flush chain` —
+    #     иначе правила накапливались бы при каждом запуске
+    #     (ExecStartPre сервиса + ежедневный таймер).
+    # OUTPUT chain: type route (не filter!) — ядро делает повторный route lookup
+    # после цепочки, иначе fwmark 1 не подхватывается policy routing для ухода на lo.
     # priority mangle (-150) — до conntrack.
+    # PREROUTING: priority mangle (-150) — ДО conntrack, иначе TPROXY не сработает.
     # ========================================
-    nft add chain "$TABLE" output '{ type route hook output priority mangle; }' 2>/dev/null || \
-        nft flush chain "$TABLE" output
+    if ! {
+        echo "table $TABLE"
 
-    # Loop prevention: пакеты от Xray (mark 2) — НЕ трогаем
-    nft add rule "$TABLE" output meta mark 2 return
+        echo "add chain $TABLE output { type route hook output priority mangle; }"
+        echo "flush chain $TABLE output"
 
-    # Локальные/частные сети — bypass
-    nft add rule "$TABLE" output ip daddr { \
-        127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, \
-        192.168.0.0/16, 169.254.0.0/16 \
-    } return
+        # Loop prevention: пакеты от Xray (mark 2) — НЕ трогаем
+        echo "add rule $TABLE output meta mark 2 return"
 
-    # DNS-серверы — bypass
-    nft add rule "$TABLE" output ip daddr { \
-        77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, \
-        45.90.28.0, 45.90.30.0 \
-    } return
+        # Локальные/частные сети — bypass
+        echo "add rule $TABLE output ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return"
 
-    # DHCP — не трогаем
-    nft add rule "$TABLE" output udp dport { 67, 68 } return
+        # DNS-серверы — bypass
+        echo "add rule $TABLE output ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return"
 
-    # Bypass IP прокси-серверов
-    for ip in $(extract_proxy_ips); do
-        if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-            nft add rule "$TABLE" output ip daddr "$ip" return
-        fi
-    done
+        # DHCP — не трогаем
+        echo "add rule $TABLE output udp dport { 67, 68 } return"
 
-    # Маркируем TCP/UDP → пакет уходит через policy routing на lo
-    nft add rule "$TABLE" output meta l4proto { tcp, udp } meta mark set 0x1
+        # Bypass IP прокси-серверов
+        while read -r ip; do
+            [ -n "$ip" ] || continue
+            echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || continue
+            echo "add rule $TABLE output ip daddr $ip return"
+        done < <(extract_proxy_ips)
 
-    # ========================================
-    # PREROUTING chain (hook prerouting) — TProxy на lo
-    # priority mangle (-150) — ДО conntrack (-200), иначе TPROXY не сработает.
-    # ========================================
-    nft add chain "$TABLE" prerouting '{ type filter hook prerouting priority mangle; }' 2>/dev/null || \
-        nft flush chain "$TABLE" prerouting
+        # Маркируем TCP/UDP → пакет уходит через policy routing на lo
+        echo "add rule $TABLE output meta l4proto { tcp, udp } meta mark set 0x1"
 
-    # Только маркированные пакеты (пришли с lo после policy routing)
-    # TProxy: TCP и UDP → localhost:TPROXY_PORT
-    nft add rule "$TABLE" prerouting meta mark 0x1 meta l4proto tcp tproxy ip to "127.0.0.1:${PORT}" meta mark set 0x1 accept
-    nft add rule "$TABLE" prerouting meta mark 0x1 meta l4proto udp tproxy ip to "127.0.0.1:${PORT}" meta mark set 0x1 accept
+        echo "add chain $TABLE prerouting { type filter hook prerouting priority mangle; }"
+        echo "flush chain $TABLE prerouting"
+
+        # Только маркированные пакеты (пришли с lo после policy routing)
+        echo "add rule $TABLE prerouting meta mark 0x1 meta l4proto tcp tproxy ip to 127.0.0.1:${PORT} meta mark set 0x1 accept"
+        echo "add rule $TABLE prerouting meta mark 0x1 meta l4proto udp tproxy ip to 127.0.0.1:${PORT} meta mark set 0x1 accept"
+    } | nft -f - ; then
+        echo -e "${RED}ОШИБКА${NC}"
+        logger -t xpower-nft "Failed to apply Xray TProxy rules" 2>/dev/null || true
+        return 1
+    fi
 
     echo -e "${GREEN}OK${NC}"
     echo "  ✓ TProxy порт: ${PORT}"

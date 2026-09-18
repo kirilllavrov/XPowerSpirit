@@ -293,6 +293,67 @@ def is_placeholder(ob: dict) -> bool:
     return False
 
 
+def to_xray_outbound(ob: dict):
+    """
+    Приводит outbound к формату Xray.
+
+    Часть панелей (Happ/sing-box-совместимые) отдаёт "плоский" settings:
+        {"id": ..., "flow": ..., "address": ..., "port": ...}
+    вместо Xray-вида:
+        {"vnext": [{"address": ..., "port": ..., "users": [...]}]}
+
+    Xray валидирует такой outbound без ошибки, но соединяться ему некуда:
+    он попадал в балансировщик как рабочий сервер и трафик в него падал.
+
+    Возвращает None, если адреса нет вовсе (нерабочий outbound).
+    """
+    protocol = (ob.get("protocol") or "").lower()
+    settings = ob.get("settings")
+    if not isinstance(settings, dict):
+        return ob
+
+    # Уже в формате Xray
+    if "vnext" in settings or "servers" in settings:
+        return ob
+
+    addr = settings.get("address")
+    if not addr:
+        return None
+
+    try:
+        port = int(settings.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+
+    if protocol in ("vless", "vmess"):
+        user = {"id": settings.get("id") or settings.get("uuid") or ""}
+        for key in ("encryption", "flow", "security", "level"):
+            if settings.get(key) not in (None, ""):
+                user[key] = settings[key]
+        user.setdefault("encryption", "none")
+        ob["settings"] = {
+            "vnext": [{"address": addr, "port": port or 443, "users": [user]}]
+        }
+        return ob
+
+    if protocol == "trojan":
+        ob["settings"] = {
+            "servers": [{"address": addr, "port": port or 443,
+                         "password": settings.get("password", "")}]
+        }
+        return ob
+
+    if protocol == "shadowsocks":
+        ob["settings"] = {
+            "servers": [{"address": addr, "port": port or 8388,
+                         "method": settings.get("method", "aes-256-gcm"),
+                         "password": settings.get("password", "")}]
+        }
+        return ob
+
+    return ob
+
+
 def parse_json_subscription(raw_data: str, remarks_filter: str = '') -> dict:
     """
     Парсит JSON-подписку (Happ/Sing-box/XPower формат).
@@ -333,9 +394,11 @@ def parse_json_subscription(raw_data: str, remarks_filter: str = '') -> dict:
                 hole = True
                 continue
 
-            # Пропускаем служебные outbounds
+            # Пропускаем служебные outbounds.
+            # loopback — тестовый выход провайдера (трафик заворачивается назад),
+            # в балансировщике он гарантированно ломает соединения.
             protocol = ob.get("protocol", "")
-            if protocol in ("freedom", "blackhole", "dns"):
+            if protocol in ("freedom", "blackhole", "dns", "loopback"):
                 continue
 
             # Пропускаем заглушки (невалидные серверы)
@@ -345,6 +408,13 @@ def parse_json_subscription(raw_data: str, remarks_filter: str = '') -> dict:
                     print(f"  → Пропускаем заглушку: {addr}", file=sys.stderr)
                 except Exception:
                     pass
+                continue
+
+            # "Плоский" (sing-box/Happ) settings → формат Xray
+            raw_tag = ob.get("tag", "") or "proxy"
+            ob = to_xray_outbound(ob)
+            if ob is None:
+                print(f"  → Пропускаем outbound без адреса: {raw_tag}", file=sys.stderr)
                 continue
 
             # Нормализуем тег

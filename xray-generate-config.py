@@ -177,6 +177,13 @@ def base_config() -> dict:
                 "port": TPROXY_PORT,
                 "protocol": "dokodemo-door",
                 "settings": {
+                    # ВАЖНО: в Xray 26.3.27 UDP-слушатель создаётся только по полю
+                    # "network". Документированное "allowedNetwork" для инбаунда
+                    # tunnel/dokodemo-door его НЕ включает (проверено: только TCP).
+                    # Без UDP не работают DNS по UDP и TProxy для UDP-трафика.
+                    # Держим оба поля: network — рабочее, allowedNetwork — на случай
+                    # смены поведения в новых версиях.
+                    "network": "tcp,udp",
                     "allowedNetwork": "tcp,udp",
                     "followRedirect": True
                 },
@@ -197,6 +204,8 @@ def base_config() -> dict:
                 "port": DNS_LOCAL_PORT,
                 "protocol": "dokodemo-door",
                 "settings": {
+                    # См. комментарий у tproxy-in: без "network" UDP не слушается
+                    "network": "tcp,udp",
                     "allowedNetwork": "tcp,udp"
                 }
             }

@@ -2,8 +2,11 @@
 """
 Xray Subscription Parser for Linux/OpenWrt
 Поддерживает два входных формата:
-  1. Base64 VLESS (традиционный) — без --ua или с любым неизвестным User-Agent
-  2. JSON (Happ/Sing-box/Karing/XPower) — с --ua happ/singbox/sfa/sfi/sfm/sft/karing/xpower
+  1. Base64 VLESS (традиционный)
+  2. JSON (Happ/Sing-box/Karing/XPower)
+
+Формат определяется автоматически по содержимому подписки, а не по User-Agent
+(--ua используется только для запроса подписки и пробрасывается в заголовки).
 
 Унифицированный режим (с --ua):
   Определяет формат по User-Agent, парсит, проверяет hole,
@@ -19,9 +22,6 @@ import urllib.parse as urlparse
 import urllib.request
 import re
 import argparse
-import logging
-
-logger = logging.getLogger("xray-parser")
 
 
 # -----------------------------
@@ -264,14 +264,6 @@ def parse_vless_uri(uri: str, idx: int):
 # ============================================
 #   УНИФИЦИРОВАННЫЙ РЕЖИМ (--ua)
 # ============================================
-
-def _is_json_format(user_agent: str) -> bool:
-    """Определяет, является ли User-Agent признаком JSON-подписки"""
-    ua_lower = user_agent.lower()
-    # Только известные JSON-клиенты. XPower по умолчанию использует Base64 VLESS.
-    json_markers = ["happ", "singbox", "sfa", "sfi", "sfm", "sft", "karing"]
-    return any(m in ua_lower for m in json_markers)
-
 
 def is_hole(ob: dict) -> bool:
     """Проверяет, является ли outbound сигналом hole (окончание подписки)"""

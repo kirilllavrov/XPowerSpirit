@@ -2,7 +2,7 @@
 # XPowerSpirit — автообновление Xray, geo, подписки и config.json (Linux)
 #
 # Вызывается systemd timer'ом ежедневно, либо вручную:
-#   sudo /opt/xpower/update-xray.sh
+#   sudo /opt/xpower/update-xray-linux.sh
 #
 # Поддерживает форматы подписок:
 #   - Base64 VLESS (User-Agent: XPower/1.0)
@@ -37,7 +37,7 @@ CONFIG_JSON="${CONFIG_DIR}/config.json"
 
 GENERATOR="${INSTALL_DIR}/xray-generate-config.py"
 PARSER="${INSTALL_DIR}/xray-sub-parser.py"
-NFT_UPDATER="${INSTALL_DIR}/update-nft.sh"
+NFT_UPDATER="${INSTALL_DIR}/update-nft-linux.sh"
 
 GEO_DIR="${INSTALL_DIR}"
 GEOIP="${GEO_DIR}/geoip.dat"
@@ -95,7 +95,7 @@ fetch_url() {
     local retry=1
 
     local _ua _ver _model _os
-    _ua=$(settings_get ".subscription.user_agent" 2>/dev/null || echo "XPower/1.0")
+    _ua=$(settings_get ".subscription.user_agent" 2>/dev/null || echo "XPower/1.1")
     _ver=$(settings_get ".ver_os" 2>/dev/null || echo "")
     _model=$(settings_get ".device_model" 2>/dev/null || echo "")
     _os=$(settings_get ".device_os" 2>/dev/null || echo "")
@@ -162,7 +162,7 @@ SUB_URL=$(settings_get ".subscription.url")
 
 # User-Agent
 SUB_USER_AGENT=$(settings_get ".subscription.user_agent")
-[ -z "$SUB_USER_AGENT" ] && SUB_USER_AGENT="XPower/1.0"
+[ -z "$SUB_USER_AGENT" ] && SUB_USER_AGENT="XPower/1.1"
 
 # Фильтр remarks
 REMARKS_FILTER=$(settings_get ".subscription.remarks_filter")
@@ -194,7 +194,7 @@ for i in $(seq 1 5); do
 done
 
 LATEST_VERSION=$(curl -s --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
-    sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+    jq -r '.tag_name // empty' 2>/dev/null)
 
 if [ -z "$LATEST_VERSION" ]; then
     echo "[!] Не удалось получить версию Xray — пропускаем" >>"$LOG"
@@ -300,8 +300,8 @@ update_geo() {
     echo "[+] $BASE обновлён" >>"$LOG"
 }
 
-update_geo "$GEOIP_URL" "$GEOIP"
-update_geo "$GEOSITE_URL" "$GEOSITE"
+update_geo "$GEOIP_URL" "$GEOIP" || true
+update_geo "$GEOSITE_URL" "$GEOSITE" || true
 
 # ============================================
 #   ГЕНЕРАЦИЯ CONFIG.JSON
@@ -330,15 +330,18 @@ if curl -sSL --max-time 30 \
         echo "[X] Подписка вернула HTML" >>"$LOG"
     else
         # Парсинг → генерация
+        # ВАЖНО: без `|| PARSER_OK=$?` при set -e скрипт завершался бы сразу,
+        # т.е. ветка обработки ошибки парсера была бы недостижима.
+        PARSER_OK=0
         if [ -n "$REMARKS_FILTER" ]; then
             python3 "$PARSER" --ua "$SUB_USER_AGENT" --remarks "$REMARKS_FILTER" \
-                < "$SUB_TMP" > "$PARSED_TMP" 2>>"$LOG"
+                < "$SUB_TMP" > "$PARSED_TMP" 2>>"$LOG" || PARSER_OK=$?
         else
             python3 "$PARSER" --ua "$SUB_USER_AGENT" \
-                < "$SUB_TMP" > "$PARSED_TMP" 2>>"$LOG"
+                < "$SUB_TMP" > "$PARSED_TMP" 2>>"$LOG" || PARSER_OK=$?
         fi
 
-        if [ $? -eq 0 ] && [ -s "$PARSED_TMP" ]; then
+        if [ "$PARSER_OK" -eq 0 ] && [ -s "$PARSED_TMP" ]; then
             if python3 "$GENERATOR" --output "$CONFIG_TMP" \
                 < "$PARSED_TMP" 2>>"$LOG"; then
 

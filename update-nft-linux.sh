@@ -15,7 +15,36 @@ set -euo pipefail
 CONFIG_DIR="${XPOWER_CONFIG_DIR:-/etc/xpower}"
 CONFIG_JSON="${CONFIG_DIR}/config.json"
 TABLE="inet xpower"
-TPROXY_PORT="${TPROXY_PORT:-12345}"
+
+# Порт TProxy. Приоритет: переменная окружения TPROXY_PORT → порт инбаунда
+# tproxy-in из config.json → 12345. Так порт, заданный в settings.json
+# (tproxy.port) и попавший в config.json, не может разъехаться с nftables.
+TPROXY_PORT="${TPROXY_PORT:-}"
+
+tproxy_port() {
+    if [ -n "$TPROXY_PORT" ]; then
+        echo "$TPROXY_PORT"
+        return 0
+    fi
+
+    local port
+    port=$(python3 -c "
+import json
+try:
+    with open('$CONFIG_JSON') as f:
+        cfg = json.load(f)
+    for ib in cfg.get('inbounds', []):
+        if ib.get('tag') == 'tproxy-in':
+            print(ib.get('port', 12345))
+            break
+    else:
+        print(12345)
+except Exception:
+    print(12345)
+" 2>/dev/null)
+    [ -n "$port" ] || port=12345
+    echo "$port"
+}
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -51,6 +80,9 @@ except Exception as e:
 # ============================================
 
 setup_tproxy() {
+    local PORT
+    PORT=$(tproxy_port)
+
     echo -n "Настройка nftables TProxy... "
 
     # --- Таблица ---
@@ -108,11 +140,11 @@ setup_tproxy() {
 
     # Только маркированные пакеты (пришли с lo после policy routing)
     # TProxy: TCP и UDP → localhost:TPROXY_PORT
-    nft add rule "$TABLE" prerouting meta mark 0x1 meta l4proto tcp tproxy ip to "127.0.0.1:${TPROXY_PORT}" meta mark set 0x1 accept
-    nft add rule "$TABLE" prerouting meta mark 0x1 meta l4proto udp tproxy ip to "127.0.0.1:${TPROXY_PORT}" meta mark set 0x1 accept
+    nft add rule "$TABLE" prerouting meta mark 0x1 meta l4proto tcp tproxy ip to "127.0.0.1:${PORT}" meta mark set 0x1 accept
+    nft add rule "$TABLE" prerouting meta mark 0x1 meta l4proto udp tproxy ip to "127.0.0.1:${PORT}" meta mark set 0x1 accept
 
     echo -e "${GREEN}OK${NC}"
-    echo "  ✓ TProxy порт: ${TPROXY_PORT}"
+    echo "  ✓ TProxy порт: ${PORT}"
     echo "  ✓ Policy routing: fwmark 1 → table 100 → lo"
 
     # Выводим IP прокси-серверов
@@ -148,6 +180,9 @@ cleanup() {
 # ============================================
 
 check_status() {
+    local PORT
+    PORT=$(tproxy_port)
+
     echo "=== XPowerSpirit nftables Status ==="
     echo ""
 
@@ -173,10 +208,10 @@ check_status() {
     echo ""
 
     # Xray порт
-    if ss -tlnp 2>/dev/null | grep -q ":${TPROXY_PORT}"; then
-        echo -e "Xray TProxy (:${TPROXY_PORT}): ${GREEN}слушает${NC}"
+    if ss -tlnp 2>/dev/null | grep -q ":${PORT}"; then
+        echo -e "Xray TProxy (:${PORT}): ${GREEN}слушает${NC}"
     else
-        echo -e "Xray TProxy (:${TPROXY_PORT}): ${RED}не слушает${NC}"
+        echo -e "Xray TProxy (:${PORT}): ${RED}не слушает${NC}"
     fi
 }
 
@@ -201,7 +236,7 @@ case "${1:-}" in
         echo ""
         echo "Переменные окружения:"
         echo "  XPOWER_CONFIG_DIR  Путь к конфигам (по умолчанию: /etc/xpower)"
-        echo "  TPROXY_PORT        Порт TProxy (по умолчанию: 12345)"
+        echo "  TPROXY_PORT        Порт TProxy (по умолчанию: из config.json, иначе 12345)"
         ;;
     *)
         setup_tproxy

@@ -28,8 +28,14 @@ import os
 SETTINGS_FILE = os.environ.get("XPOWER_CONFIG_DIR", "/etc/xpower") + "/settings.json"
 LOG_DIR = os.environ.get("XPOWER_LOG_DIR", "/var/log/xpower")
 
-# Whitelist по умолчанию (переопределяется из settings.json)
-DOMAIN_WHITELIST = []
+# Порт локального DNS-инбаунда Xray (dns-local).
+# Определяется установщиком в settings.json → dns.local_port:
+#   5353 — если DNS отдаётся через systemd-resolved/dnsmasq (они умеют "#порт")
+#   53   — если используется голый /etc/resolv.conf (glibc порт не поддерживает)
+DNS_LOCAL_PORT = 5353
+
+# Порт TProxy-инбаунда (tproxy-in). Читается из settings.json → tproxy.port.
+TPROXY_PORT = 12345
 
 # Правила роутинга по умолчанию (переопределяются из settings.json → routing)
 ROUTING_CONFIG = {
@@ -60,12 +66,21 @@ ROUTING_CONFIG = {
 
 def load_settings():
     """Загружает настройки из /etc/xray/settings.json"""
-    global DOMAIN_WHITELIST, ROUTING_CONFIG
+    global ROUTING_CONFIG, DNS_LOCAL_PORT, TPROXY_PORT
     if os.path.isfile(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
                 settings = json.load(f)
-            DOMAIN_WHITELIST = settings.get("subscription", {}).get("domain_whitelist", [])
+            dns_cfg = settings.get("dns", {})
+            try:
+                DNS_LOCAL_PORT = int(dns_cfg.get("local_port", 5353))
+            except (TypeError, ValueError):
+                DNS_LOCAL_PORT = 5353
+            tproxy_cfg = settings.get("tproxy", {})
+            try:
+                TPROXY_PORT = int(tproxy_cfg.get("port", 12345))
+            except (TypeError, ValueError):
+                TPROXY_PORT = 12345
             # Загружаем правила роутинга (мержим с дефолтами — пользователь может переопределить любое поле)
             user_routing = settings.get("routing", {})
             if user_routing:
@@ -159,7 +174,7 @@ def base_config() -> dict:
             {
                 "tag": "tproxy-in",
                 "listen": "0.0.0.0",
-                "port": 12345,
+                "port": TPROXY_PORT,
                 "protocol": "dokodemo-door",
                 "settings": {
                     "allowedNetwork": "tcp,udp",
@@ -179,7 +194,7 @@ def base_config() -> dict:
             {
                 "tag": "dns-local",
                 "listen": "127.0.0.1",
-                "port": 5353,
+                "port": DNS_LOCAL_PORT,
                 "protocol": "dokodemo-door",
                 "settings": {
                     "allowedNetwork": "tcp,udp"
@@ -405,8 +420,7 @@ def main():
     
     # Загружаем настройки из единого JSON-конфига
     load_settings()
-    if DOMAIN_WHITELIST:
-        print(f"  → Domain whitelist из settings.json: {', '.join(DOMAIN_WHITELIST)}", file=sys.stderr)
+    print(f"  → TProxy: 0.0.0.0:{TPROXY_PORT}, локальный DNS: 127.0.0.1:{DNS_LOCAL_PORT}", file=sys.stderr)
     
     print("  → Обработка унифицированной подписки", file=sys.stderr)
     try:

@@ -9,7 +9,7 @@
 #
 # Опции:
 #   --sub=URL              URL подписки (обязателен)
-#   --ua=USER_AGENT        User-Agent для запроса подписки (по умолчанию: XPower/1.0)
+#   --ua=USER_AGENT        User-Agent для запроса подписки (по умолчанию: XPower/1.1)
 #   --remarks=FILTER       Фильтр по remarks (для JSON-подписок)
 #   --no-dns               Не настраивать DNS
 #   --dry-run              Показать что будет сделано, без реальных изменений
@@ -41,6 +41,10 @@ UPDATER="${INSTALL_DIR}/update-xray-linux.sh"
 NFT_UPDATER="${INSTALL_DIR}/update-nft-linux.sh"
 CLI_TOOL="/usr/local/bin/xpower-client"
 
+# Каталог, из которого запущен установщик: если рядом есть копии файлов —
+# берём их, иначе качаем из REPO (работает и при `curl | bash`)
+SCRIPT_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
+
 # Переменные (из CLI или дефолты)
 SUB_URL=""
 SUB_USER_AGENT="XPower/1.1"
@@ -48,6 +52,11 @@ REMARKS_FILTER=""
 SETUP_DNS=true
 DRY_RUN=false
 UNINSTALL=false
+
+# DNS: заполняется в detect_dns_mode() — resolved | dnsmasq | resolvconf | none
+# DNS_LOCAL_PORT — порт inбаунда Xray "dns-local" (он же попадает в config.json)
+DNS_MODE=""
+DNS_LOCAL_PORT=5353
 
 # Цвета
 RED='\033[0;31m'
@@ -171,6 +180,23 @@ download_file() {
     return 1
 }
 
+# Установка файла проекта: сначала локальная копия рядом с install-скриптом,
+# иначе — загрузка из репозитория. Единый источник правды, чтобы файлы
+# в репозитории и на диске не расходились (см. историю про update-nft.sh).
+install_file() {
+    local name="$1"
+    local dst="$2"
+    local mode="${3:-644}"
+
+    if [ -f "${SCRIPT_DIR}/${name}" ]; then
+        run_cmd cp "${SCRIPT_DIR}/${name}" "$dst"
+        log_info "${name} (локальная копия)"
+    else
+        download_file "${REPO}/${name}" "$dst" || die "Не удалось скачать ${name}"
+    fi
+    run_cmd chmod "$mode" "$dst"
+}
+
 # jq-хелперы для settings.json
 settings_get() {
     local key="$1"
@@ -244,67 +270,30 @@ do_install() {
     # 3. Загружаем скрипты из репозитория (или копируем локальные)
     log_step "Загрузка скриптов..."
 
-    SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-
-    # Пробуем локальные копии сначала
-    if [ -f "$SCRIPT_DIR/xray-generate-config.py" ]; then
-        run_cmd cp "$SCRIPT_DIR/xray-generate-config.py" "$GENERATOR"
-        log_info "xray-generate-config.py (локальная копия)"
-    else
-        download_file "${REPO}/xray-generate-config.py" "$GENERATOR" || die "Не удалось скачать xray-generate-config.py"
-    fi
-
-    if [ -f "$SCRIPT_DIR/xray-sub-parser.py" ]; then
-        run_cmd cp "$SCRIPT_DIR/xray-sub-parser.py" "$PARSER"
-        log_info "xray-sub-parser.py (локальная копия)"
-    else
-        download_file "${REPO}/xray-sub-parser.py" "$PARSER" || die "Не удалось скачать xray-sub-parser.py"
-    fi
-
-    if [ -f "$SCRIPT_DIR/update-xray-linux.sh" ]; then
-        run_cmd cp "$SCRIPT_DIR/update-xray-linux.sh" "$UPDATER"
-        log_info "update-xray-linux.sh (локальная копия)"
-    else
-        download_file "${REPO}/update-xray-linux.sh" "$UPDATER" || die "Не удалось скачать update-xray-linux.sh"
-    fi
-
-    run_cmd chmod +x "$GENERATOR" "$PARSER" "$UPDATER"
-
-    # Проверяем, что критичные файлы на месте и не мусор
-    for f in "$GENERATOR" "$PARSER" "$UPDATER"; do
-        [ -s "$f" ] || die "Критичный файл отсутствует: $f"
-        head -c 4 "$f" | grep -q '^#!/' || die "Файл повреждён (не скрипт): $f"
-    done
-
-    # nft-скрипт: локальная копия, либо из репозитория, либо генерируем
-    if [ -f "$SCRIPT_DIR/update-nft-linux.sh" ]; then
-        run_cmd cp "$SCRIPT_DIR/update-nft-linux.sh" "$NFT_UPDATER"
-        log_info "update-nft-linux.sh (локальная копия)"
-    elif ! download_file "${REPO}/update-nft-linux.sh" "$NFT_UPDATER" 2>/dev/null; then
-        log_warn "update-nft-linux.sh не скачан — создаю локально"
-        create_nft_updater
-    fi
-    [ -s "$NFT_UPDATER" ] || die "Не удалось создать update-nft-linux.sh"
-    head -c 4 "$NFT_UPDATER" | grep -q '^#!/' || die "update-nft-linux.sh повреждён (не скрипт)"
-    run_cmd chmod +x "$NFT_UPDATER"
+    install_file "xray-generate-config.py" "$GENERATOR" 755
+    install_file "xray-sub-parser.py"     "$PARSER"    755
+    install_file "update-xray-linux.sh"   "$UPDATER"   755
+    install_file "update-nft-linux.sh"    "$NFT_UPDATER" 755
 
     # CLI-утилита
-    create_cli_tool
-    [ -s "$CLI_TOOL" ] || die "Не удалось создать $CLI_TOOL"
+    install_file "xpower-client" "$CLI_TOOL" 755
+
+    # Проверяем, что критичные файлы на месте и не мусор
+    # (в dry-run файлы не создаются, поэтому проверки пропускаем)
+    if ! $DRY_RUN; then
+        for f in "$GENERATOR" "$PARSER" "$UPDATER" "$NFT_UPDATER" "$CLI_TOOL"; do
+            [ -s "$f" ] || die "Критичный файл отсутствует: $f"
+            head -c 4 "$f" | grep -q '^#!/' || die "Файл повреждён (не скрипт): $f"
+        done
+    fi
 
     log_info "Скрипты загружены"
 
     # 4. Инициализируем settings.json
     log_step "Настройка settings.json..."
     if [ ! -f "$SETTINGS_JSON" ]; then
-        if download_file "${REPO}/settings.default.json" "${SETTINGS_JSON}.tmp" 2>/dev/null; then
-            run_cmd mv "${SETTINGS_JSON}.tmp" "$SETTINGS_JSON"
-        else
-            log_warn "settings.default.json не скачан — создаю с настройками по умолчанию"
-            create_default_settings
-        fi
-        [ -s "$SETTINGS_JSON" ] || die "Не удалось создать settings.default.json"
-        run_cmd chmod 600 "$SETTINGS_JSON"
+        install_file "settings.default.json" "$SETTINGS_JSON" 600
+        [ -s "$SETTINGS_JSON" ] || die "Не удалось установить settings.json"
     fi
 
     # Сохраняем параметры
@@ -334,6 +323,13 @@ do_install() {
     # 5b. Скачиваем geoip.dat и geosite.dat (нужны для валидации config.json)
     log_step "Загрузка geo-файлов..."
     download_geo
+
+    # 5c. Определяем режим DNS ДО генерации конфига:
+    #     от этого зависит порт инбаунда dns-local в config.json
+    if $SETUP_DNS; then
+        log_step "Определение режима DNS..."
+        detect_dns_mode
+    fi
 
     # 6. Генерация config.json (до nftables — нужны IP прокси для bypass)
     log_step "Генерация config.json..."
@@ -433,6 +429,15 @@ do_uninstall() {
         log_info "/etc/resolv.conf восстановлен"
     fi
 
+    # Восстановление DNS (dnsmasq)
+    if [ -f /etc/dnsmasq.d/xpower.conf ]; then
+        run_cmd rm -f /etc/dnsmasq.d/xpower.conf
+        if systemctl is-active --quiet dnsmasq 2>/dev/null; then
+            run_cmd systemctl restart dnsmasq
+        fi
+        log_info "dnsmasq восстановлен"
+    fi
+
     # Удаление файлов
     run_cmd rm -rf "$INSTALL_DIR"
     run_cmd rm -rf "$STATE_DIR"
@@ -462,7 +467,13 @@ install_xray() {
     if [ -x /usr/local/bin/xray ]; then
         CURRENT_VER=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
         log_info "Xray уже установлен (версия: $CURRENT_VER)"
-        read -p "  Обновить до последней версии? [Y/n] " -r ANSWER
+        # < /dev/tty — иначе при установке через `curl | bash` read() съел бы
+        # сам скрипт из stdin
+        ANSWER="y"
+        if ! read -r -p "  Обновить до последней версии? [Y/n] " ANSWER < /dev/tty 2>/dev/null; then
+            log_info "Нет доступа к терминалу — обновляю Xray без вопросов"
+            ANSWER="y"
+        fi
         if [[ "$ANSWER" =~ ^[Nn]$ ]]; then
             return 0
         fi
@@ -478,7 +489,7 @@ install_xray() {
     done
 
     LATEST_VERSION=$(curl -s --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
-        sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+        jq -r '.tag_name // empty' 2>/dev/null)
     [ -z "$LATEST_VERSION" ] && die "Не удалось получить версию Xray"
 
     ARCH=$(uname -m)
@@ -533,41 +544,119 @@ install_xray() {
 #   НАСТРОЙКА DNS
 # ============================================
 
-setup_dns() {
+# Занят ли порт каким-нибудь слушателем (tcp или udp)
+port_busy() {
+    local port="$1"
+    ss -lnut 2>/dev/null | awk -v pat=":${port}$" 'NR > 1 { for (i = 1; i <= NF; i++) if ($i ~ pat) found = 1 } END { exit found ? 0 : 1 }'
+}
+
+# Определяет, КАК система будет отдавать DNS в Xray, и какой порт должен
+# слушать инбаунд dns-local. Вызывать ДО generate_config().
+#
+#   resolved   — systemd-resolved: в resolved.conf.d допустимо "DNS=127.0.0.1#5353"
+#   dnsmasq    — dnsmasq: допустимо "server=127.0.0.1#5353"
+#   resolvconf — голый /etc/resolv.conf: порт указать нельзя, Xray слушает :53
+#   none       — сами не трогаем (--no-dns или неизвестный резолвер)
+detect_dns_mode() {
+    DNS_MODE="none"
+    DNS_LOCAL_PORT=5353
+
+    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        DNS_MODE="resolved"
+    elif systemctl is-active --quiet dnsmasq 2>/dev/null; then
+        DNS_MODE="dnsmasq"
+    elif port_busy 53; then
+        log_warn "Порт 53 занят неизвестным резолвером — DNS не перенастраиваем"
+    else
+        DNS_MODE="resolvconf"
+        DNS_LOCAL_PORT=53
+    fi
+
+    # resolved и dnsmasq умеют указывать порт (127.0.0.1#port), поэтому при
+    # занятом 5353 (его держит mDNS/avahi) можно взять соседний свободный порт
+    case "$DNS_MODE" in
+        resolved|dnsmasq)
+            local p=5353
+            while port_busy "$p" && [ "$p" -lt 5370 ]; do
+                p=$((p + 1))
+            done
+            [ "$p" != 5353 ] && log_warn "Порт 5353 занят (mDNS/avahi) — использую ${p}"
+            DNS_LOCAL_PORT="$p"
+            ;;
+    esac
+
+    # Порт нужен генератору config.json (инбаунд dns-local)
+    settings_set ".dns.mode" "$DNS_MODE"
+    settings_set ".dns.local_port" "$DNS_LOCAL_PORT"
+
     if $DRY_RUN; then
-        log_dry "Настройка DNS: systemd-resolved или resolv.conf"
+        log_dry "Режим DNS: ${DNS_MODE}, Xray dns-local слушает 127.0.0.1:${DNS_LOCAL_PORT}"
         return 0
     fi
 
-    # Пробуем systemd-resolved
-    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        log_info "Обнаружен systemd-resolved"
-        mkdir -p /etc/systemd/resolved.conf.d
-        cat > /etc/systemd/resolved.conf.d/xpower.conf <<EOF
+    case "$DNS_MODE" in
+        resolved)   log_info "DNS: systemd-resolved → 127.0.0.1#${DNS_LOCAL_PORT}" ;;
+        dnsmasq)    log_info "DNS: dnsmasq → 127.0.0.1#${DNS_LOCAL_PORT}" ;;
+        resolvconf) log_info "DNS: /etc/resolv.conf → 127.0.0.1:${DNS_LOCAL_PORT}" ;;
+    esac
+}
+
+setup_dns() {
+    if $DRY_RUN; then
+        log_dry "Настройка DNS: режим ${DNS_MODE:-?}, порт Xray ${DNS_LOCAL_PORT}"
+        return 0
+    fi
+
+    case "$DNS_MODE" in
+        resolved)
+            log_info "Настройка systemd-resolved..."
+            mkdir -p /etc/systemd/resolved.conf.d
+            cat > /etc/systemd/resolved.conf.d/xpower.conf <<EOF
 [Resolve]
-DNS=127.0.0.1#5353
+DNS=127.0.0.1#${DNS_LOCAL_PORT}
 FallbackDNS=77.88.8.8 1.1.1.1
 Domains=~.
 EOF
-        systemctl restart systemd-resolved
-        log_info "systemd-resolved настроен (DNS → 127.0.0.1:5353)"
-    else
-        # Прямой resolv.conf
-        log_info "Настройка /etc/resolv.conf..."
-        if [ ! -f "${CONFIG_DIR}/resolv.conf.bak" ]; then
-            cp /etc/resolv.conf "${CONFIG_DIR}/resolv.conf.bak"
-        fi
-        cat > /etc/resolv.conf <<EOF
-# XPowerSpirit DNS
-nameserver 127.0.0.1#5353
+            systemctl restart systemd-resolved
+            log_info "systemd-resolved настроен (DNS → 127.0.0.1#${DNS_LOCAL_PORT})"
+            ;;
+
+        dnsmasq)
+            log_info "Настройка dnsmasq..."
+            mkdir -p /etc/dnsmasq.d
+            cat > /etc/dnsmasq.d/xpower.conf <<EOF
+# XPowerSpirit: весь DNS уходит в Xray (dns-local)
+no-resolv
+no-poll
+server=127.0.0.1#${DNS_LOCAL_PORT}
+EOF
+            systemctl restart dnsmasq
+            log_info "dnsmasq настроен (upstream → 127.0.0.1#${DNS_LOCAL_PORT})"
+            ;;
+
+        resolvconf)
+            # glibc НЕ понимает запись вида "nameserver 127.0.0.1#5353" — порт в
+            # /etc/resolv.conf указывать нельзя, поэтому Xray слушает :53.
+            log_info "Настройка /etc/resolv.conf (Xray слушает 127.0.0.1:${DNS_LOCAL_PORT})..."
+            if [ ! -f "${CONFIG_DIR}/resolv.conf.bak" ]; then
+                cp /etc/resolv.conf "${CONFIG_DIR}/resolv.conf.bak"
+            fi
+            cat > /etc/resolv.conf <<EOF
+# XPowerSpirit DNS — обслуживается Xray (inbound dns-local)
+nameserver 127.0.0.1
 nameserver 77.88.8.8
 options edns0 trust-ad
 EOF
-        # Защита от перезаписи NetworkManager
-        chattr +i /etc/resolv.conf 2>/dev/null || \
-            log_warn "Не удалось защитить resolv.conf (immutable bit)"
-        log_info "/etc/resolv.conf настроен"
-    fi
+            # Защита от перезаписи NetworkManager
+            chattr +i /etc/resolv.conf 2>/dev/null || \
+                log_warn "Не удалось защитить resolv.conf (immutable bit)"
+            log_info "/etc/resolv.conf настроен (127.0.0.1:${DNS_LOCAL_PORT})"
+            ;;
+
+        *)
+            log_warn "DNS не настроен автоматически (резолвер не распознан)"
+            ;;
+    esac
 }
 
 # ============================================
@@ -670,350 +759,21 @@ generate_config() {
 # ============================================
 
 create_systemd_service() {
-    if $DRY_RUN; then
-        log_dry "Создание /etc/systemd/system/xpower-client.service"
-        return 0
-    fi
-
-    cat > /etc/systemd/system/xpower-client.service <<'SYSTEMDEOF'
-[Unit]
-Description=XPowerSpirit Xray TProxy Client
-Documentation=https://github.com/kirilllavrov/XPowerSpirit
-After=network-online.target nss-lookup.target
-Wants=network-online.target
-Before=nss-lookup.target
-
-[Service]
-Type=simple
-User=root
-Environment=XRAY_LOCATION_ASSET=/opt/xpower
-ExecStartPre=/opt/xpower/update-nft-linux.sh
-ExecStartPre=/usr/local/bin/xray run -test -config /etc/xpower/config.json
-ExecStart=/usr/local/bin/xray run -config /etc/xpower/config.json
-ExecStopPost=/opt/xpower/update-nft-linux.sh --cleanup
-Restart=on-failure
-RestartSec=10
-LimitNOFILE=1048576
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=xpower-client
-
-# Безопасность
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/var/log/xpower /var/cache/xpower /opt/xpower/geoip.dat /opt/xpower/geosite.dat
-ReadOnlyPaths=/etc/xpower/config.json /etc/xpower/settings.json /opt/xpower
-
-[Install]
-WantedBy=multi-user.target
-SYSTEMDEOF
-
-    log_info "systemd сервис создан"
+    log_step "Установка systemd сервиса..."
+    install_file "xpower-client.service" "/etc/systemd/system/xpower-client.service" 644
+    log_info "systemd сервис установлен"
 }
 
 create_systemd_timer() {
-    if $DRY_RUN; then
-        log_dry "Создание systemd timer для автообновления"
-        return 0
-    fi
-
-    cat > /etc/systemd/system/xpower-update.service <<'EOF'
-[Unit]
-Description=XPowerSpirit Auto-Update
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-User=root
-ExecStart=/opt/xpower/update-xray-linux.sh
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=xpower-update
-EOF
-
-    cat > /etc/systemd/system/xpower-update.timer <<'EOF'
-[Unit]
-Description=XPowerSpirit Daily Update Timer
-Requires=xpower-update.service
-
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=1800
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
+    log_step "Установка systemd timer автообновления..."
+    install_file "xpower-update.service" "/etc/systemd/system/xpower-update.service" 644
+    install_file "xpower-update.timer"   "/etc/systemd/system/xpower-update.timer"   644
 
     run_cmd systemctl daemon-reload
     run_cmd systemctl enable xpower-update.timer
     run_cmd systemctl start xpower-update.timer
 
-    log_info "systemd timer для автообновления создан (ежедневно)"
-}
-
-# ============================================
-#   ЛОКАЛЬНЫЕ СКРИПТЫ
-# ============================================
-
-create_nft_updater() {
-    cat > "$NFT_UPDATER" <<'NFTEOF'
-#!/bin/bash
-# XPowerSpirit — nftables для локального TProxy клиента
-# Только OUTPUT-цепочка (трафик самой машины)
-
-set -euo pipefail
-
-TABLE="inet xpower"
-CONFIG_DIR="${XPOWER_CONFIG_DIR:-/etc/xpower}"
-CONFIG_JSON="${CONFIG_DIR}/config.json"
-
-# Извлечение IP прокси-серверов из config.json
-extract_proxy_ips() {
-    python3 -c '
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        cfg = json.load(f)
-    addrs = set()
-    for ob in cfg.get("outbounds", []):
-        for vnext in ob.get("settings", {}).get("vnext", []):
-            addr = vnext.get("address")
-            if isinstance(addr, str) and "." in addr and addr not in ("hole","0.0.0.0","127.0.0.1"):
-                addrs.add(addr)
-    for a in sorted(addrs):
-        print(a)
-except:
-    pass
-' "$CONFIG_JSON" 2>/dev/null
-}
-
-setup_tproxy() {
-    # Создаём таблицу xpower
-    nft add table inet xpower 2>/dev/null || true
-
-    # Policy routing (до nftables)
-    while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
-    ip route flush table 100 2>/dev/null || true
-    ip rule add fwmark 1 table 100
-    ip route add local 0.0.0.0/0 dev lo table 100
-
-    # OUTPUT chain (hook output) — маркировка
-    nft add chain inet xpower output '{ type filter hook output priority 0; }' 2>/dev/null || \
-        nft flush chain inet xpower output
-
-    # Loop protection: mark 2 → не трогаем
-    nft add rule inet xpower output meta mark 2 return
-
-    # Локальные/частные сети — bypass
-    nft add rule inet xpower output ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return
-
-    # DNS bypass
-    nft add rule inet xpower output ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return
-
-    # DHCP bypass
-    nft add rule inet xpower output udp dport { 67, 68 } return
-
-    # Bypass IP прокси-серверов
-    for ip in $(extract_proxy_ips); do
-        if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-            nft add rule inet xpower output ip daddr "$ip" return
-        fi
-    done
-
-    # Маркируем TCP/UDP → уходит через policy routing на lo
-    nft add rule inet xpower output meta l4proto { tcp, udp } meta mark set 0x1
-
-    # PREROUTING chain (hook prerouting) — TProxy на lo
-    nft add chain inet xpower prerouting '{ type filter hook prerouting priority 0; }' 2>/dev/null || \
-        nft flush chain inet xpower prerouting
-
-    # Только маркированные пакеты (пришли с lo после policy routing)
-    nft add rule inet xpower prerouting meta mark 0x1 meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
-    nft add rule inet xpower prerouting meta mark 0x1 meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
-
-    echo "[+] nftables TProxy правила применены"
-}
-
-cleanup() {
-    nft delete table inet xpower 2>/dev/null || true
-
-    while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
-    ip route flush table 100 2>/dev/null || true
-
-    echo "[+] nftables правила удалены"
-}
-
-case "${1:-}" in
-    --cleanup)
-        cleanup
-        ;;
-    *)
-        setup_tproxy
-        ;;
-esac
-NFTEOF
-    chmod +x "$NFT_UPDATER"
-}
-
-create_cli_tool() {
-    cat > "$CLI_TOOL" <<'CLIEOF'
-#!/bin/bash
-# XPowerSpirit CLI — управление прокси-клиентом
-
-set -euo pipefail
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-usage() {
-    cat <<EOF
-XPowerSpirit Client — управление Xray TProxy
-
-Использование:
-  xpower-client status       Показать статус
-  xpower-client start        Запустить прокси
-  xpower-client stop         Остановить прокси
-  xpower-client restart      Перезапустить
-  xpower-client update       Обновить подписку и конфиг
-  xpower-client toggle       Вкл/выкл
-  xpower-client test         Проверить соединение
-  xpower-client logs         Посмотреть логи (journalctl)
-  xpower-client uninstall    Удалить XPowerSpirit
-EOF
-}
-
-do_status() {
-    echo -n "Сервис:     "
-    if systemctl is-active --quiet xpower-client 2>/dev/null; then
-        echo -e "${GREEN}активен${NC}"
-    else
-        echo -e "${RED}остановлен${NC}"
-    fi
-
-    echo -n "Автообновление: "
-    if systemctl is-active --quiet xpower-update.timer 2>/dev/null; then
-        echo -e "${GREEN}включено${NC}"
-    else
-        echo -e "${YELLOW}отключено${NC}"
-    fi
-
-    echo -n "Xray:       "
-    if /usr/local/bin/xray version >/dev/null 2>&1; then
-        /usr/local/bin/xray version 2>/dev/null | head -1
-    else
-        echo -e "${RED}не установлен${NC}"
-    fi
-
-    echo -n "nftables:   "
-    if sudo nft list table inet xpower >/dev/null 2>&1; then
-        echo -e "${GREEN}настроены${NC}"
-    else
-        echo -e "${RED}не настроены${NC}"
-    fi
-
-    echo -n "Config:     "
-    if [ -f /etc/xpower/config.json ]; then
-        echo -e "${GREEN}/etc/xpower/config.json${NC}"
-    else
-        echo -e "${RED}отсутствует${NC}"
-    fi
-}
-
-do_test() {
-    echo "Проверка соединения..."
-    echo -n "  IPv4 (прямой):   "
-    if curl -fs --max-time 5 https://ifconfig.me/ip -o /dev/null 2>/dev/null; then
-        IP=$(curl -s --max-time 5 https://ifconfig.me/ip)
-        echo -e "${GREEN}$IP${NC}"
-    else
-        echo -e "${RED}нет соединения${NC}"
-    fi
-
-    echo -n "  DNS (через Xray): "
-    if nslookup google.com 127.0.0.1 -port=5353 >/dev/null 2>&1; then
-        echo -e "${GREEN}OK${NC}"
-    else
-        echo -e "${YELLOW}недоступен (возможно используется systemd-resolved)${NC}"
-    fi
-}
-
-case "${1:-}" in
-    status)    do_status ;;
-    start)     systemctl start xpower-client && echo "XPowerSpirit запущен" ;;
-    stop)      systemctl stop xpower-client && echo "XPowerSpirit остановлен" ;;
-    restart)   systemctl restart xpower-client && echo "XPowerSpirit перезапущен" ;;
-    update)    /opt/xpower/update-xray-linux.sh ;;
-    toggle)
-        if systemctl is-active --quiet xpower-client; then
-            systemctl stop xpower-client
-            echo "XPowerSpirit остановлен"
-        else
-            systemctl start xpower-client
-            echo "XPowerSpirit запущен"
-        fi ;;
-    test)      do_test ;;
-    logs)      journalctl -u xpower-client -f ;;
-    uninstall) sudo "$0" --uninstall 2>/dev/null || echo "Запустите: sudo ./install-linux.sh --uninstall" ;;
-    *)         usage ;;
-esac
-CLIEOF
-    chmod +x "$CLI_TOOL"
-}
-
-create_default_settings() {
-    cat > "$SETTINGS_JSON" <<'JSONEOF'
-{
-  "subscription": {
-    "url": "",
-    "user_agent": "XPower/1.0",
-    "remarks_filter": "",
-    "domain_whitelist": []
-  },
-  "hwid": "",
-  "device_model": "",
-  "device_os": "",
-  "ver_os": "",
-  "routing": {
-    "domainStrategy": "IPOnDemand",
-    "doh_domains": [
-      "common.dot.dns.yandex.net",
-      "cloudflare-dns.com",
-      "dns.google",
-      "dns.quad9.net",
-      "doh.opendns.com",
-      "dns.nextdns.io"
-    ],
-    "block_domains": [
-      "geosite:category-ads"
-    ],
-    "direct_ips": [
-      "geoip:ru",
-      "geoip:private"
-    ],
-    "direct_domains": [
-      "geosite:private",
-      "geosite:category-browser",
-      "geosite:category-cdn-ru",
-      "geosite:category-mobile",
-      "geosite:category-ru"
-    ],
-    "proxy_domains": [
-      "geosite:category-streaming",
-      "geosite:category-games"
-    ]
-  },
-  "geo": {
-    "geoip_url": "https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat",
-    "geosite_url": "https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
-  }
-}
-JSONEOF
-    log_info "settings.json создан с настройками по умолчанию"
+    log_info "systemd timer для автообновления установлен (ежедневно)"
 }
 
 # ============================================
@@ -1035,7 +795,7 @@ for arg in "$@"; do
             echo ""
             echo "Опции:"
             echo "  --sub=URL          URL подписки (обязателен)"
-            echo "  --ua=USER_AGENT    User-Agent (по умолчанию: XPower/1.0)"
+            echo "  --ua=USER_AGENT    User-Agent (по умолчанию: XPower/1.1)"
             echo "  --remarks=FILTER   Фильтр по remarks"
             echo "  --no-dns           Не настраивать DNS"
             echo "  --dry-run          Показать план без выполнения"

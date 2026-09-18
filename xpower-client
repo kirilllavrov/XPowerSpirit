@@ -44,6 +44,43 @@ XPowerSpirit Client — управление Xray TProxy
 EOF
 }
 
+# Порт локального DNS-инбаунда Xray (dns-local) — из config.json,
+# т.к. установщик может выбрать 5353 (resolved/dnsmasq) или 53 (resolv.conf)
+dns_local_port() {
+    python3 -c "
+import json
+try:
+    with open('$CONFIG_JSON') as f:
+        cfg = json.load(f)
+    for ib in cfg.get('inbounds', []):
+        if ib.get('tag') == 'dns-local':
+            print(ib.get('port', 5353))
+            break
+    else:
+        print(5353)
+except Exception:
+    print(5353)
+" 2>/dev/null || echo 5353
+}
+
+# Порт TProxy-инбаунда — из config.json (задаётся в settings.json → tproxy.port)
+tproxy_port() {
+    python3 -c "
+import json
+try:
+    with open('$CONFIG_JSON') as f:
+        cfg = json.load(f)
+    for ib in cfg.get('inbounds', []):
+        if ib.get('tag') == 'tproxy-in':
+            print(ib.get('port', 12345))
+            break
+    else:
+        print(12345)
+except Exception:
+    print(12345)
+" 2>/dev/null || echo 12345
+}
+
 do_status() {
     echo ""
     echo -e "${CYAN}=== XPowerSpirit Status ===${NC}"
@@ -142,8 +179,9 @@ do_test() {
     fi
 
     # DNS через Xray
-    echo -n "  DNS (Xray :5353): "
-    if nslookup google.com 127.0.0.1 -port=5353 >/dev/null 2>&1; then
+    DNS_PORT="$(dns_local_port)"
+    echo -n "  DNS (Xray :${DNS_PORT}): "
+    if nslookup google.com 127.0.0.1 -port="$DNS_PORT" >/dev/null 2>&1; then
         echo -e "${GREEN}● OK${NC}"
     else
         echo -e "${YELLOW}○ не отвечает (возможно systemd-resolved)${NC}"
@@ -159,11 +197,12 @@ do_test() {
     fi
 
     # Проверка что трафик идёт через прокси
+    TPROXY_PORT="$(tproxy_port)"
     echo -n "  Маршрутизация:    "
-    if ss -tlnp 2>/dev/null | grep -q ':12345'; then
-        echo -e "${GREEN}● TProxy слушает${NC}"
+    if ss -tlnp 2>/dev/null | grep -q ":${TPROXY_PORT}"; then
+        echo -e "${GREEN}● TProxy слушает (:${TPROXY_PORT})${NC}"
     else
-        echo -e "${RED}○ TProxy не слушает${NC}"
+        echo -e "${RED}○ TProxy не слушает (:${TPROXY_PORT})${NC}"
     fi
 
     echo ""
@@ -218,7 +257,7 @@ case "${1:-}" in
     start)      sudo systemctl start xpower-client && echo "XPowerSpirit запущен" ;;
     stop)       sudo systemctl stop xpower-client && echo "XPowerSpirit остановлен" ;;
     restart)    sudo systemctl restart xpower-client && echo "XPowerSpirit перезапущен" ;;
-    update)     sudo /opt/xpower/update-xray.sh ;;
+    update)     sudo /opt/xpower/update-xray-linux.sh ;;
     toggle)
         if systemctl is-active --quiet xpower-client 2>/dev/null; then
             sudo systemctl stop xpower-client
@@ -231,7 +270,7 @@ case "${1:-}" in
     logs)       sudo journalctl -u xpower-client -f ;;
     config)     do_config ;;
     proxy-list) do_proxy_list ;;
-    setup)      sudo /opt/xpower/update-nft.sh ;;
+    setup)      sudo /opt/xpower/update-nft-linux.sh ;;
     -h|--help)  usage ;;
     *)
         echo "Неизвестная команда: $1"

@@ -14,7 +14,14 @@ tests/
 *.swp
 *.bak
 *~
-xray-config-links.md
 
 # codebase-memory (локальный кэш графа кода: содержит абсолютные пути машины)
 .codebase-memory/
+
+# инструкции по сборке (локальные, не для публикации)
+.claude/
+.cursor/
+.github/
+.vscode/
+.zed/
+xray-config-links.md

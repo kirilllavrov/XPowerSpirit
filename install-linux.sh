@@ -1,7 +1,11 @@
 #!/bin/bash
 # XPowerSpirit — Xray TProxy Client for Linux (Ubuntu/Debian/Fedora)
 #
-# Установка прозрачного прокси-клиента Xray на Linux-десктоп/сервер.
+# Установка прозрачного прокси-клиента Xray для Linux-десктоп/сервер.
+# ВАЖНО: проксируется трафик ТОЛЬКО этой машины (OUTPUT-цепочка nftables).
+# Проксирование LAN (режим шлюза, PREROUTING + forward) — это отдельный проект
+# XPowerSpirit-Linux-Gateway; см. README, раздел «Клиент и шлюз».
+#
 # Поддерживает: Ubuntu 20.04+, Debian 11+, Fedora 38+
 #
 # Использование:
@@ -52,6 +56,8 @@ REMARKS_FILTER=""
 SETUP_DNS=true
 DRY_RUN=false
 UNINSTALL=false
+# Ставится remove_path(), если что-то не удалось убрать при --uninstall
+REMOVE_FAILED=0
 
 # DNS: заполняется в detect_dns_mode() — resolved | dnsmasq | resolvconf | none
 # DNS_LOCAL_PORT — порт inбаунда Xray "dns-local" (он же попадает в config.json)
@@ -101,7 +107,10 @@ remove_path() {
         return 0
     fi
     [ -e "$path" ] || return 0
-    rm "$flag" "$path" 2>/dev/null || log_warn "Не удалось удалить: $path"
+    if ! rm "$flag" "$path" 2>/dev/null; then
+        log_warn "Не удалось удалить: $path"
+        REMOVE_FAILED=1
+    fi
 }
 
 detect_os() {
@@ -138,7 +147,9 @@ detect_os() {
 install_packages() {
     log_step "Установка зависимостей..."
 
-    local pkgs="curl jq python3 unzip nftables"
+    # e2fsprogs — это chattr, которым установщик защищает /etc/resolv.conf от
+    # перезаписи NetworkManager (в минимальных образах его может не быть)
+    local pkgs="curl jq python3 unzip nftables e2fsprogs"
 
     case "$OS_ID" in
         ubuntu|debian)
@@ -266,6 +277,13 @@ do_install() {
     # 0a. Определяем ОС
     detect_os
 
+    # 0b. Проверка systemd — без него не установить сервис и таймер.
+    # Без этой проверки установка доходила до `systemctl daemon-reload`
+    # и падала с невнятной ошибкой уже после создания файлов.
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+        die "systemd не обнаружен (он нужен для сервиса xpower-client и таймера обновления)"
+    fi
+
     # 0b. Проверка --uninstall
     if $UNINSTALL; then
         do_uninstall
@@ -326,6 +344,13 @@ do_install() {
             log_warn "Не удалось обновить структуру settings.json — оставляю как есть"
         fi
         rm -f "${SETTINGS_JSON}.defaults"
+    fi
+
+    # Режим работы: поддерживается только локальный клиент.
+    # Явно разведено с режимом шлюза (LAN) — это отдельный проект.
+    MODE=$(settings_get ".mode")
+    if [ -n "$MODE" ] && [ "$MODE" != "local" ]; then
+        die "settings.json: mode=$MODE не поддерживается — эта сборка работает только как локальный клиент (mode=local). Для проксирования LAN см. XPowerSpirit-Linux-Gateway"
     fi
 
     # Сохраняем параметры
@@ -463,6 +488,14 @@ do_uninstall() {
         log_info "/etc/resolv.conf восстановлен"
     fi
 
+    # Если установка заменяла симлинк — возвращаем симлинк
+    if [ -f "${CONFIG_DIR}/resolv.conf.link" ]; then
+        chattr -i /etc/resolv.conf 2>/dev/null || true
+        run_cmd rm -f /etc/resolv.conf
+        run_cmd ln -sf "$(cat "${CONFIG_DIR}/resolv.conf.link")" /etc/resolv.conf
+        log_info "resolv.conf снова симлинк → $(cat "${CONFIG_DIR}/resolv.conf.link")"
+    fi
+
     # Восстановление DNS (dnsmasq)
     if [ -f /etc/dnsmasq.d/xpower.conf ]; then
         run_cmd rm -f /etc/dnsmasq.d/xpower.conf
@@ -484,7 +517,15 @@ do_uninstall() {
     done
     run_cmd systemctl daemon-reload
 
-    log_info "XPowerSpirit полностью удалён."
+    if [ "${REMOVE_FAILED:-0}" -eq 1 ]; then
+        # Типичная причина: каталог — точка монтирования (Docker-стенд) либо
+        # файл защищён chattr +i. Сервисы, правила и бинарники уже удалены.
+        log_warn "XPowerSpirit удалён, но часть файлов осталась (см. выше)."
+        log_warn "Если каталог смонтирован или защищён — удалите его вручную:"
+        log_warn "  rm -rf $INSTALL_DIR $STATE_DIR $LOG_DIR $CACHE_DIR $CONFIG_DIR"
+    else
+        log_info "XPowerSpirit полностью удалён."
+    fi
 }
 
 # ============================================
@@ -676,6 +717,16 @@ EOF
             if [ ! -f "${CONFIG_DIR}/resolv.conf.bak" ]; then
                 cp /etc/resolv.conf "${CONFIG_DIR}/resolv.conf.bak"
             fi
+
+            # На Fedora и Ubuntu /etc/resolv.conf часто симлинк (NetworkManager,
+            # systemd-resolved). Запись «сквозь» симлинк ушла бы в чужой файл,
+            # поэтому запоминаем цель и заменяем симлинк обычным файлом.
+            if [ -L /etc/resolv.conf ]; then
+                readlink /etc/resolv.conf > "${CONFIG_DIR}/resolv.conf.link" 2>/dev/null || true
+                log_warn "/etc/resolv.conf — симлинк → $(cat "${CONFIG_DIR}/resolv.conf.link" 2>/dev/null); заменяю обычным файлом (симлинк вернётся при удалении)"
+                rm -f /etc/resolv.conf
+            fi
+
             cat > /etc/resolv.conf <<EOF
 # XPowerSpirit DNS — обслуживается Xray (inbound dns-local)
 nameserver 127.0.0.1
@@ -834,6 +885,9 @@ for arg in "$@"; do
             echo "  --dry-run          Показать план без выполнения"
             echo "  --uninstall        Удалить XPowerSpirit"
             echo "  --help             Эта справка"
+            echo ""
+            echo "Режим работы: проксируется трафик только этой машины (локальный клиент)."
+            echo "Проксирование LAN/шлюза — отдельный проект XPowerSpirit-Linux-Gateway."
             exit 0
             ;;
         *)

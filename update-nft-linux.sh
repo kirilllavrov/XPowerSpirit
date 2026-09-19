@@ -154,7 +154,9 @@ setup_tproxy() {
     done
     echo "  ✓ Прокси-серверов в bypass: $proxy_count"
 
-    logger -t xpower-nft "Xray TProxy rules applied"
+    # `|| true` обязательно: без /dev/log (контейнеры, минимальные системы)
+    # logger возвращает ошибку, а с set -e это обрывало всю установку/апдейт
+    logger -t xpower-nft "Xray TProxy rules applied" 2>/dev/null || true
 }
 
 # ============================================
@@ -172,7 +174,7 @@ cleanup() {
     ip route flush table 100 2>/dev/null || true
 
     echo -e "${GREEN}OK${NC}"
-    logger -t xpower-nft "Xray TProxy rules removed"
+    logger -t xpower-nft "Xray TProxy rules removed" 2>/dev/null || true
 }
 
 # ============================================
@@ -228,6 +230,9 @@ case "${1:-}" in
         ;;
     --help|-h)
         echo "XPowerSpirit nftables TProxy для Linux-клиента"
+        echo ""
+        echo "Проксируется трафик ТОЛЬКО этой машины (OUTPUT-цепочка)."
+        echo "Трафик LAN/шлюза не проксируется — см. XPowerSpirit-Linux-Gateway."
         echo ""
         echo "Использование:"
         echo "  $0             Применить TProxy правила"

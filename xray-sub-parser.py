@@ -357,25 +357,31 @@ def to_xray_outbound(ob: dict):
 def parse_json_subscription(raw_data: str, remarks_filter: str = '') -> dict:
     """
     Парсит JSON-подписку (Happ/Sing-box/XPower формат).
-    Возвращает {"hole": bool, "outbounds": [сырые outbounds из подписки]}.
+    Возвращает {"hole": bool, "reason": str, "outbounds": [...]}.
+
+    reason заполняется, когда рабочих серверов нет: панели сообщают причину
+    (лимит устройств, окончание подписки и т.п.) в remarks профилей-заглушек —
+    без этого пользователь видит только «нет прокси — DIRECT».
     """
     try:
         data = json.loads(raw_data)
     except Exception as e:
         log_error(f"Failed to parse JSON subscription: {e}")
-        return {"hole": False, "outbounds": []}
+        return {"hole": False, "reason": "не удалось разобрать JSON подписки", "outbounds": []}
 
     if isinstance(data, dict):
         data = [data]
     if not isinstance(data, list):
         log_error("Unexpected JSON structure (expected list or dict)")
-        return {"hole": False, "outbounds": []}
+        return {"hole": False, "reason": "неожиданная структура JSON подписки", "outbounds": []}
 
     # Один проход: hole, фильтрация, извлечение
     hole = False
     all_outbounds = []
     seen_tags = set()
     found_profile = False
+    # remarks профилей, в которых не оказалось ни одного рабочего сервера
+    stub_remarks = []
 
     for config in data:
         config_remarks = config.get("remarks", "")
@@ -387,6 +393,8 @@ def parse_json_subscription(raw_data: str, remarks_filter: str = '') -> dict:
 
         found_profile = True
         print(f"  → Используем профиль: {config_remarks}", file=sys.stderr)
+
+        used_before = len(all_outbounds)
 
         for ob in config.get("outbounds", []):
             # Проверка hole (сигнал окончания подписки)
@@ -430,13 +438,29 @@ def parse_json_subscription(raw_data: str, remarks_filter: str = '') -> dict:
 
             all_outbounds.append(ob)
 
+        # В профиле не оказалось ни одного рабочего сервера — значит это
+        # сообщение панели (например, «Достигнут лимит устройств»)
+        if len(all_outbounds) == used_before and str(config_remarks).strip():
+            stub_remarks.append(str(config_remarks).strip())
+
     if remarks_filter and not found_profile:
         print(f"  [X] Профиль с remarks '{remarks_filter}' не найден!", file=sys.stderr)
         print(f"  → Доступные профили:", file=sys.stderr)
         for config in data:
             print(f"      - {config.get('remarks', '')}", file=sys.stderr)
 
-    return {"hole": hole, "outbounds": all_outbounds}
+    # Причина DIRECT-режима (показывается в `xpower-client status`)
+    reason = ""
+    if not all_outbounds:
+        parts = []
+        if hole:
+            parts.append("срок подписки истёк (сервер 'hole')")
+        if stub_remarks:
+            unique = list(dict.fromkeys(stub_remarks))
+            parts.append("панель вернула профили-сообщения: " + "; ".join(unique))
+        reason = "; ".join(parts) if parts else "в подписке нет рабочих серверов"
+
+    return {"hole": hole, "reason": reason, "outbounds": all_outbounds}
 
 
 def detect_format(data: str) -> str:
@@ -475,14 +499,14 @@ def unified_main():
     raw = sys.stdin.read().strip()
     if not raw:
         log_error("Empty input")
-        print(json.dumps({"hole": False, "outbounds": []}))
+        print(json.dumps({"hole": False, "reason": "пустой ответ подписки", "outbounds": []}))
         sys.exit(1)
 
     # Загружаем по URL, если нужно
     data, success = try_download(raw)
     if not success or not data:
         log_error("Failed to download subscription")
-        print(json.dumps({"hole": False, "outbounds": []}))
+        print(json.dumps({"hole": False, "reason": "не удалось скачать подписку", "outbounds": []}))
         sys.exit(1)
 
     fmt = detect_format(data)
@@ -497,14 +521,20 @@ def unified_main():
 
         data, decoded = try_base64_decode(data)
         if not decoded:
+            # Не ошибка: отдаём DIRECT-режим с причиной, чтобы пользователь
+            # видел её в `xpower-client status`, а не «Error парсера»
             log_error("Failed to decode Base64 (no vless:// found)")
-            print(json.dumps({"hole": False, "outbounds": []}))
-            sys.exit(1)
+            print(json.dumps({"hole": False,
+                              "reason": "подписка не распознана: ни JSON, ни Base64 с vless",
+                              "outbounds": []}))
+            sys.exit(0)
 
         if "vless://" not in data:
             log_error("No vless:// URIs found in subscription")
-            print(json.dumps({"hole": False, "outbounds": []}))
-            sys.exit(1)
+            print(json.dumps({"hole": False,
+                              "reason": "в подписке нет vless-серверов",
+                              "outbounds": []}))
+            sys.exit(0)
 
         lines = [l.strip() for l in data.splitlines() if l.strip()]
         outbounds = []
@@ -544,7 +574,13 @@ def unified_main():
         if not outbounds:
             log_error("No valid vless:// URIs parsed")
 
-        result = {"hole": hole, "outbounds": outbounds}
+        # Причина DIRECT-режима для `xpower-client status`
+        reason = ""
+        if not outbounds:
+            reason = ("срок подписки истёк (сервер 'hole')" if hole
+                      else "все серверы в подписке — заглушки (лимит устройств или неактивная подписка)")
+
+        result = {"hole": hole, "reason": reason, "outbounds": outbounds}
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

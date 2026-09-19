@@ -173,6 +173,12 @@ HWID=$(settings_get ".hwid")
 SUB_URL=$(settings_get ".subscription.url")
 [ -z "$SUB_URL" ] && die "Пустой URL подписки в settings.json"
 
+# Режим работы: этот проект — только локальный клиент (см. README)
+MODE=$(settings_get ".mode")
+if [ -n "$MODE" ] && [ "$MODE" != "local" ]; then
+    die "settings.json: mode=$MODE не поддерживается (только local, для LAN — XPowerSpirit-Linux-Gateway)"
+fi
+
 # User-Agent
 SUB_USER_AGENT=$(settings_get ".subscription.user_agent")
 [ -z "$SUB_USER_AGENT" ] && SUB_USER_AGENT="XPower/1.1"

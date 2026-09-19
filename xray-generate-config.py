@@ -20,12 +20,15 @@ import json
 import sys
 import argparse
 import os
+import time
 
 # ============================================
 #   КОНФИГУРАЦИЯ
 # ============================================
 
-SETTINGS_FILE = os.environ.get("XPOWER_CONFIG_DIR", "/etc/xpower") + "/settings.json"
+CONFIG_DIR = os.environ.get("XPOWER_CONFIG_DIR", "/etc/xpower")
+SETTINGS_FILE = CONFIG_DIR + "/settings.json"
+STATE_DIR = os.environ.get("XPOWER_STATE_DIR", CONFIG_DIR + "/state")
 LOG_DIR = os.environ.get("XPOWER_LOG_DIR", "/var/log/xpower")
 
 # Порт локального DNS-инбаунда Xray (dns-local).
@@ -36,6 +39,36 @@ DNS_LOCAL_PORT = 5353
 
 # Порт TProxy-инбаунда (tproxy-in). Читается из settings.json → tproxy.port.
 TPROXY_PORT = 12345
+
+# DNS-серверы и hosts. Переопределяются из settings.json → dns.servers / dns.hosts.
+# Значения ниже — те же, что раньше были жёстко зашиты в base_config().
+DNS_SERVERS = [
+    {
+        "address": "https+local://common.dot.dns.yandex.net/dns-query",
+        "domains": ["geosite:category-ru"],
+        "expectedIPs": ["geoip:ru"],
+        "skipFallback": True
+    },
+    {
+        "address": "https+local://cloudflare-dns.com/dns-query",
+        "skipFallback": False
+    },
+    {
+        "address": "https+local://dns.nextdns.io",
+        "skipFallback": False
+    }
+]
+
+DNS_HOSTS = {
+    "common.dot.dns.yandex.net": ["77.88.8.1", "77.88.8.8"],
+    "cloudflare-dns.com": ["1.0.0.1", "1.1.1.1"],
+    "dns.nextdns.io": ["45.90.28.0", "45.90.30.0"]
+}
+
+# API и статистика: нужны `xpower-client status` для показа трафика
+# и активных нод (settings.json → api.enabled / api.listen_port)
+API_ENABLED = True
+API_PORT = 10085
 
 # Правила роутинга по умолчанию (переопределяются из settings.json → routing)
 ROUTING_CONFIG = {
@@ -65,8 +98,9 @@ ROUTING_CONFIG = {
 
 
 def load_settings():
-    """Загружает настройки из /etc/xray/settings.json"""
+    """Загружает настройки из /etc/xpower/settings.json"""
     global ROUTING_CONFIG, DNS_LOCAL_PORT, TPROXY_PORT
+    global DNS_SERVERS, DNS_HOSTS, API_ENABLED, API_PORT
     if os.path.isfile(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
@@ -76,11 +110,27 @@ def load_settings():
                 DNS_LOCAL_PORT = int(dns_cfg.get("local_port", 5353))
             except (TypeError, ValueError):
                 DNS_LOCAL_PORT = 5353
+            # DNS-серверы и статические hosts (списки должны быть непустыми)
+            if isinstance(dns_cfg.get("hosts"), dict) and dns_cfg["hosts"]:
+                DNS_HOSTS = dns_cfg["hosts"]
+            if isinstance(dns_cfg.get("servers"), list) and dns_cfg["servers"]:
+                DNS_SERVERS = dns_cfg["servers"]
             tproxy_cfg = settings.get("tproxy", {})
             try:
                 TPROXY_PORT = int(tproxy_cfg.get("port", 12345))
             except (TypeError, ValueError):
                 TPROXY_PORT = 12345
+            api_cfg = settings.get("api", {})
+            API_ENABLED = bool(api_cfg.get("enabled", True))
+            try:
+                API_PORT = int(api_cfg.get("listen_port", 10085))
+            except (TypeError, ValueError):
+                API_PORT = 10085
+            # Режим работы: local (только эта машина) — единственный поддерживаемый
+            mode = str(settings.get("mode", "local") or "local").lower()
+            if mode != "local":
+                log_error(f"  [!] settings.json: mode={mode} — этот проект работает "
+                          f"только как локальный клиент (mode=local)")
             # Загружаем правила роутинга (мержим с дефолтами — пользователь может переопределить любое поле)
             user_routing = settings.get("routing", {})
             if user_routing:
@@ -132,8 +182,8 @@ def normalize_outbound(ob: dict) -> dict:
 # ============================================
 
 def base_config() -> dict:
-    """Возвращает базовую конфигурацию Xray с TProxy и DNS"""
-    return {
+    """Возвращает базовую конфигурацию Xray: TProxy, DNS, (опционально) API/статистика"""
+    cfg = {
         "log": {
             "loglevel": "none",
             "access": LOG_DIR + "/xray-access.log",
@@ -148,27 +198,10 @@ def base_config() -> dict:
             "disableFallback": False,
             "disableFallbackIfMatch": True,
             "enableParallelQuery": True,
-            "hosts": {
-                "common.dot.dns.yandex.net": ["77.88.8.1", "77.88.8.8"],
-                "cloudflare-dns.com": ["1.0.0.1", "1.1.1.1"],
-                "dns.nextdns.io": ["45.90.28.0", "45.90.30.0"]
-            },
-            "servers": [
-                {
-                    "address": "https+local://common.dot.dns.yandex.net/dns-query",
-                    "domains": ["geosite:category-ru"],
-                    "expectedIPs": ["geoip:ru"],
-                    "skipFallback": True
-                },
-                {
-                    "address": "https+local://cloudflare-dns.com/dns-query",
-                    "skipFallback": False
-                },
-                {
-                    "address": "https+local://dns.nextdns.io",
-                    "skipFallback": False
-                }
-            ]
+            # hosts нужны, чтобы DoH-серверы ниже не уходили в собственный DNS
+            # (иначе получается петля через dns-local)
+            "hosts": dict(DNS_HOSTS),
+            "servers": DNS_SERVERS
         },
         "inbounds": [
             {
@@ -211,6 +244,47 @@ def base_config() -> dict:
             }
         ]
     }
+
+    # Статистика и API: нужны `xpower-client status` (трафик и активные ноды).
+    # Упрощённый режим (api.listen) не требует отдельного inbound и правила
+    # роутинга; ключи статистики — outbound>>>tag>>>traffic>>>uplink|downlink.
+    if API_ENABLED:
+        cfg["stats"] = {}
+        cfg["api"] = {
+            "tag": "api",
+            "listen": f"127.0.0.1:{API_PORT}",
+            "services": ["StatsService"],
+        }
+        cfg["policy"] = {
+            "system": {
+                "statsInboundUplink": True,
+                "statsInboundDownlink": True,
+                "statsOutboundUplink": True,
+                "statsOutboundDownlink": True,
+            }
+        }
+
+    return cfg
+
+
+def write_status(mode: str, servers: int, reason: str) -> None:
+    """
+    Пишет состояние подписки в ${CONFIG_DIR}/state/status.json — его читает
+    `xpower-client status`, чтобы показать режим и причину DIRECT-режима
+    (лимит устройств, окончание подписки и т.п.).
+    """
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        payload = {
+            "updated": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "mode": mode,
+            "servers": servers,
+            "reason": reason,
+        }
+        with open(os.path.join(STATE_DIR, "status.json"), "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log_error(f"  [!] Не удалось записать status.json: {e}")
 
 
 def build_direct_config() -> dict:
@@ -439,21 +513,25 @@ def main():
         sys.exit(1)
     
     if data.get("hole", False):
-        print("  [!] Обнаружен сервер 'hole' (срок подписки истёк).", file=sys.stderr)
-        print("  [!] Включаем DIRECT-режим (весь трафик напрямую).", file=sys.stderr)
+        reason = str(data.get("reason") or "срок подписки истёк (сервер 'hole')")
+        print(f"  [!] DIRECT-режим (трафик напрямую): {reason}", file=sys.stderr)
         save_config(build_direct_config(), args.output)
+        write_status("direct", 0, reason)
         return
-    
+
     raw_outbounds = data.get("outbounds", [])
     if not raw_outbounds:
-        log_error("No outbounds in unified input — switching to DIRECT")
+        reason = str(data.get("reason") or "в подписке нет рабочих серверов")
+        log_error(f"  [!] Нет рабочих серверов — DIRECT-режим: {reason}")
         save_config(build_direct_config(), args.output)
+        write_status("direct", 0, reason)
         return
-    
+
     proxy_outbounds = [normalize_outbound(ob) for ob in raw_outbounds]
     cfg = build_proxy_config(proxy_outbounds)
     print_proxy_summary(proxy_outbounds)
     save_config(cfg, args.output)
+    write_status("proxy", len(proxy_outbounds), "")
 
 
 if __name__ == "__main__":

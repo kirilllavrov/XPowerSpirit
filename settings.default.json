@@ -15,9 +15,35 @@
   "device_model": "",
   "device_os": "",
   "ver_os": "",
+  "mode": "local",
   "dns": {
     "mode": "",
-    "local_port": 5353
+    "local_port": 5353,
+    "hosts": {
+      "common.dot.dns.yandex.net": ["77.88.8.1", "77.88.8.8"],
+      "cloudflare-dns.com": ["1.0.0.1", "1.1.1.1"],
+      "dns.nextdns.io": ["45.90.28.0", "45.90.30.0"]
+    },
+    "servers": [
+      {
+        "address": "https+local://common.dot.dns.yandex.net/dns-query",
+        "domains": ["geosite:category-ru"],
+        "expectedIPs": ["geoip:ru"],
+        "skipFallback": true
+      },
+      {
+        "address": "https+local://cloudflare-dns.com/dns-query",
+        "skipFallback": false
+      },
+      {
+        "address": "https+local://dns.nextdns.io",
+        "skipFallback": false
+      }
+    ]
+  },
+  "api": {
+    "enabled": true,
+    "listen_port": 10085
   },
   "routing": {
     "domainStrategy": "IPOnDemand",

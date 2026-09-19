@@ -24,19 +24,22 @@ NC='\033[0m'
 
 CONFIG_DIR="${XPOWER_CONFIG_DIR:-/etc/xpower}"
 CONFIG_JSON="${CONFIG_DIR}/config.json"
+# Состояние подписки (режим + причина DIRECT-режима) — пишет генератор конфига
+STATUS_JSON="${CONFIG_DIR}/state/status.json"
 
 usage() {
     cat <<EOF
 XPowerSpirit Client — управление Xray TProxy
 
 Использование:
-  xpower-client status       Показать статус
+  xpower-client status       Показать статус (включая трафик и активные ноды)
   xpower-client start        Запустить прокси
   xpower-client stop         Остановить прокси
   xpower-client restart      Перезапустить
   xpower-client update       Обновить подписку и конфиг
   xpower-client toggle       Вкл/выкл прокси
   xpower-client test         Проверить соединение
+  xpower-client traffic      Статистика трафика по серверам
   xpower-client logs         Логи в реальном времени
   xpower-client config       Показать конфигурацию
   xpower-client proxy-list   Список прокси-серверов
@@ -79,6 +82,107 @@ try:
 except Exception:
     print(12345)
 " 2>/dev/null || echo 12345
+}
+
+# Порт API Xray (statsquery) — из config.json (settings.json → api.listen_port)
+api_port() {
+    python3 -c "
+import json
+try:
+    with open('$CONFIG_JSON') as f:
+        listen = str(json.load(f).get('api', {}).get('listen', ''))
+    print(listen.rsplit(':', 1)[-1] or 10085)
+except Exception:
+    print(10085)
+" 2>/dev/null || echo 10085
+}
+
+# Человекочитаемый размер (Б/КБ/МБ/ГБ/ТБ)
+human_bytes() {
+    awk -v b="${1:-0}" 'BEGIN {
+        split("B KB MB GB TB", u, " ");
+        i = 1;
+        while (b >= 1024 && i < 5) { b /= 1024; i++ }
+        printf (i == 1 ? "%.0f %s" : "%.1f %s"), b, u[i];
+    }'
+}
+
+# Статистика трафика из Xray API (statsquery).
+# Печатает строки: "TOTAL <up> <down>", "COUNT <n>", "NODE <tag> <up> <down>".
+# Возвращает 1, если Xray не запущен, API отключён или данных нет.
+traffic_stats() {
+    [ -x /usr/local/bin/xray ] || return 1
+
+    local raw
+    raw="$(/usr/local/bin/xray api statsquery --server="127.0.0.1:$(api_port)" -pattern "" 2>/dev/null)" || return 1
+    [ -n "$raw" ] || return 1
+
+    printf '%s' "$raw" | python3 -c '
+import json, re, sys
+
+raw = sys.stdin.read()
+pairs = []
+
+try:
+    data = json.loads(raw)
+except Exception:
+    data = None
+
+if isinstance(data, dict):
+    items = data.get("stat") or []
+elif isinstance(data, list):
+    items = data
+else:
+    items = []
+
+for st in items:
+    if isinstance(st, dict):
+        pairs.append((str(st.get("name", "")), int(st.get("value", 0) or 0)))
+
+# Фолбэк для текстового (protobuf) вывода: stat: < name: "..." value: N >
+if not pairs:
+    for chunk in raw.split("name:"):
+        if "value:" not in chunk:
+            continue
+        quoted = chunk.split(chr(34))
+        vm = re.search(r"value:\s*(\d+)", chunk)
+        if len(quoted) > 1 and vm:
+            pairs.append((quoted[1], int(vm.group(1))))
+
+if not pairs:
+    sys.exit(1)
+
+total_up = 0
+total_down = 0
+nodes = {}
+
+for name, value in pairs:
+    parts = name.split(">>>")
+    if len(parts) != 4 or parts[2] != "traffic":
+        continue
+    kind, tag, _, direction = parts
+    if kind not in ("inbound", "outbound"):
+        continue
+    if direction == "uplink":
+        total_up += value
+    else:
+        total_down += value
+    # служебные теги не показываем как «ноды»
+    if tag in ("api", "direct", "block", "dns-out", "dns-local",
+               "socks-in", "http-in", "tproxy-in", "balancer"):
+        continue
+    node = nodes.setdefault(tag, {"up": 0, "down": 0})
+    if direction == "uplink":
+        node["up"] += value
+    else:
+        node["down"] += value
+
+print("TOTAL %d %d" % (total_up, total_down))
+ranked = sorted(nodes.items(), key=lambda kv: kv[1]["up"] + kv[1]["down"], reverse=True)
+print("COUNT %d" % len(ranked))
+for tag, val in ranked:
+    print("NODE %s %d %d" % (tag, val["up"], val["down"]))
+' 2>/dev/null
 }
 
 # Проверка DNS через локальный инбаунд Xray.
@@ -155,6 +259,61 @@ do_status() {
         echo -e "${RED}○ отсутствует${NC}"
     fi
 
+    # Состояние подписки: режим и причина DIRECT-режима (пишет генератор)
+    echo -n "  Подписка:         "
+    if [ -f "$STATUS_JSON" ]; then
+        local line mode text
+        line=$(python3 -c "
+import json
+try:
+    with open('$STATUS_JSON') as f:
+        s = json.load(f)
+    mode = str(s.get('mode', '?'))
+    updated = str(s.get('updated', ''))
+    when = (' (обновлено ' + updated[11:16] + ')') if len(updated) >= 16 else ''
+    if mode == 'direct':
+        text = 'DIRECT-режим — ' + (str(s.get('reason') or '') or 'причина неизвестна') + when
+    else:
+        text = 'прокси-режим, серверов: ' + str(s.get('servers', 0)) + when
+    print(mode + chr(9) + text)
+except Exception:
+    print('?' + chr(9) + 'нет данных')
+" 2>/dev/null)
+        IFS=$'\t' read -r mode text <<< "$line"
+        if [ "$mode" = "direct" ]; then
+            echo -e "${YELLOW}○ ${text}${NC}"
+        elif [ "$mode" = "proxy" ]; then
+            echo -e "${GREEN}● ${text}${NC}"
+        else
+            echo -e "${YELLOW}○ ${text}${NC}"
+        fi
+    else
+        echo -e "${YELLOW}○ нет данных${NC} (запустите: xpower-client update)"
+    fi
+
+    # Трафик и активные ноды (через API Xray)
+    echo "  Трафик:"
+    local stats
+    if stats="$(traffic_stats)"; then
+        local up down
+        up=$(echo "$stats" | awk '/^TOTAL/ {print $2}')
+        down=$(echo "$stats" | awk '/^TOTAL/ {print $3}')
+        echo "    Всего:            ↑ $(human_bytes "$up")  ↓ $(human_bytes "$down")"
+        local nodes
+        nodes=$(echo "$stats" | awk '/^NODE/ {print}' | head -5)
+        if [ -n "$nodes" ]; then
+            echo "    Активные ноды:"
+            while read -r _ tag nup ndown; do
+                [ -n "$tag" ] || continue
+                printf "      ${GREEN}●${NC} %-16s ↑ %s  ↓ %s\n" "$tag" "$(human_bytes "$nup")" "$(human_bytes "$ndown")"
+            done <<< "$nodes"
+        else
+            echo "    Активные ноды:    (трафика пока нет)"
+        fi
+    else
+        echo "    Всего:            ${YELLOW}○ нет данных${NC} (Xray не запущен или api.enabled=false)"
+    fi
+
     # Прокси
     echo "  Прокси-серверы:"
     if [ -f "$CONFIG_JSON" ]; then
@@ -206,7 +365,10 @@ do_test() {
 
     # Google connectivity check (тест прокси)
     echo -n "  Google:           "
-    STATUS=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://connectivitycheck.gstatic.com/generate_204 2>/dev/null || echo "000")
+    # `|| true` + проверка на пустоту: иначе при сбое curl к его «000»
+    # добавлялся ещё и echo «000» из ||, получалось «HTTP 000000»
+    STATUS=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://connectivitycheck.gstatic.com/generate_204 2>/dev/null || true)
+    [ -n "$STATUS" ] || STATUS="000"
     if [ "$STATUS" = "204" ]; then
         echo -e "${GREEN}● OK (HTTP $STATUS)${NC}"
     else
@@ -238,10 +400,6 @@ do_config() {
 }
 
 do_proxy_list() {
-    if [ ! -f "$CONFIG_JSON" ]; then
-        echo "config.json не найден"
-        return 1
-    fi
     python3 -c "
 import json
 with open('$CONFIG_JSON') as f:
@@ -269,6 +427,41 @@ for o in outbounds:
 " 2>/dev/null
 }
 
+# Подробная статистика трафика (все ноды, а не только топ-5 как в status)
+do_traffic() {
+    echo ""
+    echo -e "${CYAN}=== Трафик XPowerSpirit ===${NC}"
+    echo ""
+
+    local stats
+    if ! stats="$(traffic_stats)"; then
+        echo "  нет данных: Xray не запущен или API отключён"
+        echo "  (проверьте: systemctl status xpower-client; settings.json → api.enabled)"
+        echo ""
+        # код возврата 1 — чтобы `xpower-client traffic || ...` работал в скриптах
+        return 1
+    fi
+
+    local up down
+    up=$(echo "$stats" | awk '/^TOTAL/ {print $2}')
+    down=$(echo "$stats" | awk '/^TOTAL/ {print $3}')
+    printf "  Всего:  ↑ %s  ↓ %s\n" "$(human_bytes "$up")" "$(human_bytes "$down")"
+    echo ""
+
+    local nodes
+    nodes=$(echo "$stats" | awk '/^NODE/ {print}')
+    if [ -z "$nodes" ]; then
+        echo "  трафика через серверы пока не было"
+    else
+        printf "  %-18s %12s %12s\n" "сервер" "отдано" "принято"
+        while read -r _ tag nup ndown; do
+            [ -n "$tag" ] || continue
+            printf "  %-18s %12s %12s\n" "$tag" "$(human_bytes "$nup")" "$(human_bytes "$ndown")"
+        done <<< "$nodes"
+    fi
+    echo ""
+}
+
 case "${1:-}" in
     status)     do_status ;;
     start)      sudo systemctl start xpower-client && echo "XPowerSpirit запущен" ;;
@@ -284,6 +477,7 @@ case "${1:-}" in
             echo -e "${GREEN}XPowerSpirit запущен${NC}"
         fi ;;
     test)       do_test ;;
+    traffic)    do_traffic ;;
     logs)       sudo journalctl -u xpower-client -f ;;
     config)     do_config ;;
     proxy-list) do_proxy_list ;;
